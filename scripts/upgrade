@@ -1,7 +1,12 @@
 #!/bin/bash
 
+# Never trace YunoHost lifecycle secrets.
+set +x
+
 source _common.sh
 source /usr/share/yunohost/helpers
+# Imported helpers may have re-enabled shell tracing.
+set +x
 
 # YunoHost creates and can restore our full-data safety backup before this script.
 ynh_script_progression "Stopping Continuwuity for upgrade..."

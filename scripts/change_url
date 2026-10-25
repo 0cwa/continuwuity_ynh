@@ -1,7 +1,12 @@
 #!/bin/bash
 
+# Never trace YunoHost lifecycle secrets.
+set +x
+
 source _common.sh
 source /usr/share/yunohost/helpers
+# Imported helpers may have re-enabled shell tracing.
+set +x
 
 # The API URL can move. Matrix IDs and signing identity must never be renamed.
 # YunoHost rolls back its primary nginx file after a failure, but it does not
