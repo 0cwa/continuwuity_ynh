@@ -18,10 +18,10 @@ class LifecycleTraceTests(unittest.TestCase):
                 lines = (PACKAGE / "scripts" / filename).read_text().splitlines()
                 self.assertEqual(lines[0], "#!/bin/bash")
                 self.assertIn("set +x", lines[:8])
-                self.assertLess(
-                    lines.index("set +x"),
-                    next(i for i, line in enumerate(lines) if line.startswith("source ")),
-                )
+                source_lines = [i for i, line in enumerate(lines) if line.startswith("source ")]
+                self.assertLess(lines.index("set +x"), source_lines[0])
+                # The helper library is allowed to turn xtrace back on.
+                self.assertEqual(lines[source_lines[-1] + 2], "set +x")
 
     def test_install_entrypoint_hides_initial_password_and_generated_token(self):
         # Exercise the production install script, including its actual defaults,
@@ -41,6 +41,9 @@ source() {
         continuwuity_configure() { :; }
         continuwuity_register_service() { :; }
         continuwuity_wait_ready() { :; }
+    elif [[ "$1" == "/usr/share/yunohost/helpers" ]]; then
+        # Simulate a helper library which has re-enabled tracing on import.
+        set -x
     fi
 }
 ynh_script_progression() { :; }

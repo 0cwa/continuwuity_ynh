@@ -6,6 +6,8 @@ set +x
 source ../settings/scripts/_common.sh
 source /usr/share/yunohost/helpers
 source ../settings/scripts/_backup.sh
+# Re-disable tracing after sourcing YunoHost helpers, which may re-enable it.
+set +x
 set -e
 
 ynh_script_progression "Checking the Continuwuity backup..."

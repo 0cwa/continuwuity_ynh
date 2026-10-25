@@ -6,6 +6,8 @@ set +x
 source ../settings/scripts/_common.sh
 source /usr/share/yunohost/helpers
 source ../settings/scripts/_backup.sh
+# Re-disable tracing after sourcing YunoHost helpers, which may re-enable it.
+set +x
 
 ynh_print_info "Creating a consistent backup of Continuwuity..."
 ynh_print_info "All database and media files are included, including before upgrades. The service is stopped only while the snapshot is copied; allow free disk space for both the complete snapshot and the resulting archive."

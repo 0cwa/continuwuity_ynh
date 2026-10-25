@@ -5,6 +5,8 @@ set +x
 
 source _common.sh
 source /usr/share/yunohost/helpers
+# Re-disable tracing after sourcing YunoHost helpers, which may re-enable it.
+set +x
 
 ynh_app_config_apply() (
     # The panel handles credentials. Keep even validation and error paths out of
