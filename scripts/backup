@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# YunoHost executes lifecycle hooks under bash -x; never log app secrets.
+set +x
+
 source ../settings/scripts/_common.sh
 source /usr/share/yunohost/helpers
 source ../settings/scripts/_backup.sh
