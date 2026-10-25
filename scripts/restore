@@ -14,8 +14,14 @@ continuwuity_validate_data_path
 continuwuity_require_local_media
 # YunoHost's ynh_restore skips absent data; accepting that fallback for a
 # RocksDB homeserver can destroy history or pair old binaries with new data.
-[[ -d "${YNH_APP_BACKUP_DIR:?}$data_dir" ]] \
+archive_data="${YNH_APP_BACKUP_DIR:?}$data_dir"
+[[ -d "$archive_data" && ! -L "$archive_data" ]] \
     || ynh_die "This archive has no complete Continuwuity data snapshot. Restore a full backup containing the database and media."
+# Reject an empty/partial RocksDB backup before replacing existing history.
+[[ -f "$archive_data/CURRENT" && -s "$archive_data/CURRENT" && ! -L "$archive_data/CURRENT" ]] \
+    || ynh_die "The archive lacks a valid RocksDB CURRENT marker. Refusing to replace existing homeserver data."
+[[ ! -L "$archive_data/media" ]] \
+    || ynh_die "The archived media directory is a symlink. Refusing an incomplete or unsafe restoration."
 
 # Check dependencies BEFORE moving any retained data or overwriting binaries.
 # The actual Dex client registration still happens after files are restored.

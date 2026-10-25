@@ -26,8 +26,9 @@ continuwuity_require_local_media() {
         || ynh_die "Cannot inspect media mounts; refusing an unsafe backup/restore."
     while IFS= read -r target; do
         case "$target" in
-            "$media"|"$media/"*)
-                ynh_die "Mounted media is not supported for YunoHost backup/restore. Unmount only after a verified media migration, or use encrypted offsite backups."
+            "$data_dir"|"$data_dir/"*)
+                # Reject mounts at the root or anywhere inside the data tree.
+                ynh_die "Mounted media or data directories are not supported for YunoHost backup/restore. Migrate to local storage or use encrypted offsite backups."
                 ;;
         esac
     done <<< "$mounts"
@@ -36,11 +37,14 @@ continuwuity_require_local_media() {
 continuwuity_check_snapshot_space() {
     # Preflight before stopping the database. This is a minimum staging
     # requirement, not a promise about the later compressed YunoHost archive.
-    local bytes free reserve
-    bytes="$(du --summarize --block-size=1 -- "$data_dir" | awk '{print $1}')" \
+    local bytes free reserve usage capacity
+    # Parsing a pipeline masks du/df errors if awk succeeds after partial output.
+    usage="$(du --summarize --block-size=1 -- "$data_dir")" \
         || ynh_die "Unable to measure database and media; refusing incomplete backup."
-    free="$(df --portability --block-size=1 -- "$YNH_APP_BACKUP_DIR" | awk 'END {print $4}')" \
+    bytes="${usage%%[[:space:]]*}"
+    capacity="$(df --portability --block-size=1 -- "$YNH_APP_BACKUP_DIR")" \
         || ynh_die "Unable to check backup staging free space."
+    free="$(awk 'END {print $4}' <<< "$capacity")"
     [[ "$bytes" =~ ^[0-9]+$ && "$free" =~ ^[0-9]+$ ]] \
         || ynh_die "Invalid backup staging capacity information."
     reserve=$((bytes / 10 + 67108864)) # 10% headroom plus 64 MiB.

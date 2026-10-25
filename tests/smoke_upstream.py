@@ -221,6 +221,9 @@ def run_smoke(binary, temporary, smtp_port):
     finally:
         server.stop()
 
+    # Confirm restore preflight matches the real upstream RocksDB layout.
+    check((data / "CURRENT").is_file() and (data / "CURRENT").stat().st_size > 0,
+          "Upstream RocksDB no longer has a nonempty top-level CURRENT marker.")
     # Database and media have both stopped; a plain file copy is now consistent.
     shutil.copytree(data, restored)
     settings.update(data_dir=str(restored), allow_registration="true")

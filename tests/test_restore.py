@@ -140,6 +140,34 @@ class RestoreTransactionTests(unittest.TestCase):
         self.assert_original_data()
         self.assertFalse((self.root / "systemctl.log").exists())
 
+    def test_missing_or_empty_rocksdb_marker_preserves_original_data(self):
+        for mode in ("missing", "empty"):
+            with self.subTest(mode=mode):
+                marker = self.snapshot / "CURRENT"
+                if mode == "missing":
+                    marker.unlink()
+                else:
+                    marker.write_text("")
+                result = self.invoke()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("RocksDB CURRENT marker", result.stderr)
+                self.assert_original_data()
+                self.assertEqual((self.install / "continuwuity").read_text(), "original binary\n")
+                self.assertFalse((self.root / "systemctl.log").exists())
+                marker.write_text("restored database\n")
+
+    def test_symlinked_archived_media_is_rejected_before_replacement(self):
+        external = self.root / "archive-external"
+        external.mkdir()
+        (self.snapshot / "media" / "new.bin").unlink()
+        (self.snapshot / "media").rmdir()
+        (self.snapshot / "media").symlink_to(external, target_is_directory=True)
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("archived media directory is a symlink", result.stderr)
+        self.assert_original_data()
+        self.assertFalse((self.root / "systemctl.log").exists())
+
     def test_symlinked_media_cannot_be_silently_archived_or_replaced(self):
         external = self.root / "external"
         external.mkdir()

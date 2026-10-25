@@ -33,7 +33,19 @@ systemctl() {
         *) return 99 ;;
     esac
 }
+du() {
+    if [[ "${FAIL_DU:-0}" == 1 ]]; then
+        printf '1234\t%s\n' "$data_dir"
+        return 29
+    fi
+    command du "$@"
+}
 df() {
+    if [[ "${FAIL_DF:-0}" == 1 ]]; then
+        printf 'Filesystem 1B-blocks Used Available Capacity Mounted\n'
+        printf 'simulated 200000000 0 200000000 0%% /\n'
+        return 31
+    fi
     if [[ "${FAIL_CAPACITY:-0}" == 1 ]]; then
         printf 'Filesystem 1B-blocks Used Available Capacity Mounted\n'
         printf 'limited 1000 999 1 99%% /\n'
@@ -44,6 +56,10 @@ df() {
 findmnt() {
     if [[ "${TEST_MEDIA_MOUNT:-0}" == 1 ]]; then
         printf '/\n%s\n' "$data_dir/media"
+    elif [[ "${TEST_DATA_MOUNT:-0}" == 1 ]]; then
+        printf '/\n%s\n' "$data_dir"
+    elif [[ "${TEST_NESTED_MOUNT:-0}" == 1 ]]; then
+        printf '/\n%s\n' "$data_dir/rocksdb"
     else
         command findmnt "$@"
     fi
@@ -168,6 +184,29 @@ class SnapshotTests(unittest.TestCase):
         result = self.run_snapshot(TEST_MEDIA_MOUNT="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Mounted media", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
+
+    def test_data_root_or_nested_mount_is_rejected_before_service_stop(self):
+        for flag in ("TEST_DATA_MOUNT", "TEST_NESTED_MOUNT"):
+            with self.subTest(flag=flag):
+                result = self.run_snapshot(**{flag: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Mounted media", result.stderr)
+                self.assertEqual(self.event_lines(), ["parent-exit"])
+                self.assertFalse(self.snapshot.exists())
+
+    def test_failed_size_probe_with_partial_output_does_not_stop_service(self):
+        result = self.run_snapshot(FAIL_DU="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unable to measure", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
+
+    def test_failed_capacity_probe_with_plausible_output_does_not_stop_service(self):
+        result = self.run_snapshot(FAIL_DF="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unable to check", result.stderr)
         self.assertEqual(self.event_lines(), ["parent-exit"])
         self.assertFalse(self.snapshot.exists())
 
