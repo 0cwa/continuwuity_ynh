@@ -40,6 +40,15 @@ def render_config(**overrides):
 
 
 class PackageTests(unittest.TestCase):
+    def test_min_yunohost_supports_the_template_json_filter(self):
+        manifest = tomllib.loads((PACKAGE / "manifest.toml").read_text())
+        requirement = manifest["integration"]["yunohost"]
+        self.assertTrue(requirement.startswith(">= "))
+        self.assertGreaterEqual(
+            tuple(map(int, requirement[3:].split("."))), (12, 1, 18),
+            "Jinja to_json was not available in the 12.1.17 helper",
+        )
+
     def test_manifest_architectures_have_pinned_matching_assets(self):
         manifest = tomllib.loads((PACKAGE / "manifest.toml").read_text())
         self.assertEqual(manifest["packaging_format"], 2)
