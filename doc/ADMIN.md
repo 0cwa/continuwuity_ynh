@@ -244,12 +244,24 @@ frozen copy while the live homeserver can continue. If copying fails, it still
 tries to restore the original service state and the backup fails explicitly.
 Filesystem reflinks are used when available; otherwise the entire directory is
 copied. The interruption and extra disk requirement grow with the data size.
+Before stopping the service, the package measures the data directory and
+requires available staging space of at least 110% of its allocated size plus
+64 MiB; the final YunoHost archive requires additional space. Provision
+additional capacity and monitor backup duration as media grows. Routine
+upgrades/settings changes no longer recursively change ownership of every
+database and media file.
 
 All data is included even for automatic upgrade backups and when
 `BACKUP_CORE_ONLY` or `do_not_backup_data` would normally omit data. Restoring
 old code against a newly migrated RocksDB database is unsafe. The restore script
 rejects archives without a complete data snapshot, and replaces retained data
-rather than merging incompatible database files.
+rather than merging incompatible database files. Before changing retained data,
+the restore now preflights Dex (when enabled) and moves any nonempty original
+data directory into a root-only rollback directory on the same filesystem.
+If the new data/service fails to restore, the original database and media are
+moved back, but YunoHost may still remove the failed application: you must
+recover the app itself from a verified complete archive. The temporary original
+data directory is discarded only after the new service passes readiness.
 
 Back up **Dex as well** for delegated authentication, and restore it before this
 app. The Continuwuity backup carries its client secret and subject mappings, but
@@ -258,8 +270,11 @@ does not copy or overwrite Dex's shared LDAP connector and other clients.
 Restoration requires the same identity domain and matching architecture for the
 archived binary. Cross-architecture restoration is not implemented: restore on
 the original architecture, or plan a tested binary/data migration separately.
-The package also rejects symlinked data directories; relocating data through a
-symlink requires an explicitly tested backup adaptation.
+The package also rejects symlinked data directories and mounted/symlinked
+media. External rclone/FUSE primary media is not a supported storage mode; do
+not mount it manually, because a lost mount could otherwise expose an empty
+underlying directory. For a supported recovery option, see the
+[Storj encrypted offsite backup guide](STORAGE.md).
 
 ## Upgrade, remove and migrate
 
