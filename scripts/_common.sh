@@ -139,7 +139,10 @@ continuwuity_permissions() {
     chown -R "root:$app" "$install_dir"
     chmod 750 "$install_dir" "$install_dir/continuwuity"
     find "$install_dir" -maxdepth 1 -type f ! -name continuwuity -exec chmod 640 {} +
-    chown -R "$app:$app" "$data_dir"
+    # Resources create the data directory with app ownership, and archive
+    # restore preserves the ownership of its contents. Never recursively chown
+    # database/media on routine maintenance (especially FUSE/cloud storage).
+    chown "$app:$app" "$data_dir"
     chmod 700 "$data_dir"
 }
 
