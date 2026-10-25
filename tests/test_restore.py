@@ -93,6 +93,13 @@ class RestoreTransactionTests(unittest.TestCase):
         )
         self.assertFalse((self.data / "media" / "new.bin").exists())
 
+    def test_old_daemon_is_stopped_before_renaming_database(self):
+        script = (PACKAGE / "scripts/restore").read_text()
+        self.assertLess(
+            script.index('if [[ -e "/etc/systemd/system/$app.service" ]]'),
+            script.index('mv -- "$data_dir" "$restore_rollback_dir/original"'),
+        )
+
     def test_success_replaces_data_and_removes_original_rollback_copy(self):
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
