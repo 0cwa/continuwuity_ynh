@@ -1,7 +1,12 @@
 #!/bin/bash
 
+# Never trace YunoHost lifecycle secrets.
+set +x
+
 source _common.sh
 source /usr/share/yunohost/helpers
+# Imported helpers may have re-enabled shell tracing.
+set +x
 
 ynh_app_config_apply() (
     # The panel handles credentials. Keep even validation and error paths out of
