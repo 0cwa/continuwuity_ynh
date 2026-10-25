@@ -85,6 +85,8 @@ PY
 }
 
 continuwuity_dex_setup() {
+    # Earlier nginx/systemd helper calls may have turned xtrace back on.
+    set +x
     if [[ "${auth_type:-password}" == password ]]; then
         # An always-present file keeps systemd and offline admin commands simple.
         install --owner=root --group="$app" --mode=640 /dev/null "$install_dir/oidc.toml"
