@@ -6,8 +6,10 @@ Continuwuity keeps its RocksDB data and media under `$data_dir` (normally
 
 **Do not mount rclone, Storj, S3/FUSE, or a symlink at `media/` in production
 with this package version.** The backup and restore scripts explicitly reject
-mounted or symlinked media rather than creating an apparently successful but
-incomplete archive. An unmounted remote cannot reliably be distinguished from
+mounts at or beneath the app data directory and a symlinked media directory,
+rather than creating an apparently successful but incomplete archive. This
+also excludes separately mounted local volumes at the data-directory root
+until a deliberately managed storage mode exists. An unmounted remote cannot reliably be distinguished from
 an ordinary local media directory without an explicitly managed storage mode.
 This package does not yet implement that mode.
 

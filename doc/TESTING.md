@@ -11,9 +11,11 @@ python3 tests/smoke_upstream.py --download
 ```
 
 The unit tests cover metadata and rendered configuration, installation-trace
-credential redaction, backup capacity/mount preflight, bootstrap credential
-handling, consistent stopped snapshots and failure recovery, restore-over-data
-rollback when late steps fail, Dex client ownership/rollback, and configuration
+credential redaction (including helpers that re-enable tracing), backup
+capacity/mount preflight (including failed disk probes and data-root mounts),
+bootstrap credential handling, consistent stopped snapshots and failure recovery,
+restore archive RocksDB-marker/symlink validation and rollback when late
+steps fail, Dex client ownership/rollback, and configuration
 or domain-change transactions. Service
 and YunoHost commands in lifecycle tests are controlled fixtures; these tests
 check decisions and file preservation, not a full operating-system install.

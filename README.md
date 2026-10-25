@@ -143,7 +143,7 @@ an account migration.
   mapping, access restrictions, backup order, and authentication migration.
 - [Testing and acceptance](doc/TESTING.md): what automated checks cover and what
   still needs a real YunoHost host.
-- [Encrypted offsite backups and external storage](doc/STORAGE.md): tested support
+- [Encrypted offsite backups and external storage](doc/STORAGE.md): current support
   boundary, a Storj/Restic recovery plan, and required future mount checks.
 - [Priorities and remaining work](doc/ROADMAP.md): implementation order and
   integrations that need further validation or separate services.
@@ -157,7 +157,7 @@ Two packaged Matrix homeservers cannot claim the same identity domain.
 Backups briefly stop the homeserver while copying the complete data directory.
 The backup preflights staging free space before stopping the service; allow
 additional capacity for the final archive. Large backups can cause downtime on
-non-reflink filesystems. Live rclone/FUSE-mounted or symlinked media are not
+non-reflink filesystems. Mounted app data (including remote media) and symlinked media are not
 supported and are rejected by the backup/restore scripts.
 Code-only upgrade backups would not safely roll back a RocksDB migration, so
 `BACKUP_CORE_ONLY` and `do_not_backup_data` do not skip this package's data copy.
