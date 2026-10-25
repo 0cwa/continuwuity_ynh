@@ -83,6 +83,12 @@ trap continuwuity_restore_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Stop the old daemon before moving its data directory: open RocksDB files
+# would otherwise keep writing to the renamed rollback copy.
+if [[ -e "/etc/systemd/system/$app.service" ]]; then
+    systemctl stop "$app.service"
+fi
+
 if [[ -d "$data_dir" && -n "$(find "$data_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
     mountpoint --quiet "$data_dir" \
         && ynh_die "Cannot safely replace a mounted data directory. Restore to a local directory instead."
@@ -90,10 +96,6 @@ if [[ -d "$data_dir" && -n "$(find "$data_dir" -mindepth 1 -maxdepth 1 -print -q
     chmod 700 "$restore_rollback_dir"
     mv -- "$data_dir" "$restore_rollback_dir/original"
     restore_had_existing_data=1
-fi
-
-if [[ -e "/etc/systemd/system/$app.service" ]]; then
-    systemctl stop "$app.service"
 fi
 
 ynh_script_progression "Restoring Continuwuity and its complete data snapshot..."
