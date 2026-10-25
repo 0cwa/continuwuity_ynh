@@ -15,6 +15,40 @@ continuwuity_validate_data_path() {
         || ynh_die "Refusing to replace an unsafe data directory: ${data_dir:-unset}."
 }
 
+# Live media on bind/FUSE/object-store mounts is not supported by this package:
+# YunoHost snapshots would otherwise copy remote objects as local files and a
+# failed/unmounted mount could silently produce an incomplete archive.
+continuwuity_require_local_media() {
+    local media="$data_dir/media" mounts target
+    [[ ! -L "$media" ]] \
+        || ynh_die "Symlinked media is not backup/restore safe. Use local media storage."
+    mounts="$(findmnt --kernel --raw --noheadings --output TARGET)" \
+        || ynh_die "Cannot inspect media mounts; refusing an unsafe backup/restore."
+    while IFS= read -r target; do
+        case "$target" in
+            "$media"|"$media/"*)
+                ynh_die "Mounted media is not supported for YunoHost backup/restore. Unmount only after a verified media migration, or use encrypted offsite backups."
+                ;;
+        esac
+    done <<< "$mounts"
+}
+
+continuwuity_check_snapshot_space() {
+    # Preflight before stopping the database. This is a minimum staging
+    # requirement, not a promise about the later compressed YunoHost archive.
+    local bytes free reserve
+    bytes="$(du --summarize --block-size=1 -- "$data_dir" | awk '{print $1}')" \
+        || ynh_die "Unable to measure database and media; refusing incomplete backup."
+    free="$(df --portability --block-size=1 -- "$YNH_APP_BACKUP_DIR" | awk 'END {print $4}')" \
+        || ynh_die "Unable to check backup staging free space."
+    [[ "$bytes" =~ ^[0-9]+$ && "$free" =~ ^[0-9]+$ ]] \
+        || ynh_die "Invalid backup staging capacity information."
+    reserve=$((bytes / 10 + 67108864)) # 10% headroom plus 64 MiB.
+    if (( free < bytes + reserve )); then
+        ynh_die "Insufficient free space for a complete stopped-data snapshot: need at least $((bytes + reserve)) bytes in the backup staging filesystem, available $free bytes. The final YunoHost archive needs additional space."
+    fi
+}
+
 continuwuity_snapshot_data() (
     # This subshell leaves YunoHost's parent EXIT/error traps untouched.
     set -eu
@@ -26,6 +60,9 @@ continuwuity_snapshot_data() (
         || ynh_die "The Continuwuity data directory is missing; refusing an incomplete backup."
     [[ ! -e "$snapshot" && ! -L "$snapshot" ]] \
         || ynh_die "A data snapshot already exists at $snapshot; refusing to overwrite it."
+
+    continuwuity_require_local_media
+    continuwuity_check_snapshot_space
 
     initial_state="$(systemctl show --property=ActiveState --value "$app.service")"
     case "$initial_state" in
