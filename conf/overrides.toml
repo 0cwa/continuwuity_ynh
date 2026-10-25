@@ -1,0 +1,7 @@
+# Administrator-owned additions; YunoHost preserves this file on upgrade.
+# Options: https://forgejo.ellis.link/continuwuation/continuwuity/src/tag/v26.9.1/conduwuit-example.toml
+# Do not override server_name, database_path, listener address/port, or the
+# OIDC configuration managed by this package. Changes need a service restart.
+
+[global]
+# Example: url_preview_domain_explicit_allowlist = ["example.org"]

@@ -1,0 +1,12 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/tests.v1.schema.json
+test_format = 1.0
+
+[default]
+# package_check derives install, multi-instance, upgrade and backup/restore
+# tests from the manifest. Web domain changes preserve the immutable Matrix
+# identity and maintain discovery on the original identity domain.
+args.auth_type = "password"
+
+# A real Dex login needs an installed Dex app, a trusted HTTPS certificate, and
+# an OAuth-capable Matrix client. See doc/TESTING.md for that additional gate;
+# the local unit suite exercises client registration, rollback and cleanup.

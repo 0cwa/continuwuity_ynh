@@ -1,0 +1,47 @@
+# Managed by YunoHost. Use the config panel for settings exposed there.
+# Put additional upstream settings in overrides.toml; it survives upgrades.
+[global]
+server_name = {{ server_name | to_json }}
+database_path = {{ data_dir | to_json }}
+address = ["127.0.0.1"]
+port = {{ port | int }}
+# Only the loopback reverse proxy can connect; it overwrites X-Real-IP.
+request_ip_source = "x_real_ip"
+
+allow_registration = {{ allow_registration }}
+registration_token_file = {{ (install_dir + '/registration-token') | to_json }}
+allow_federation = {{ allow_federation }}
+allow_encryption = true
+max_request_size = {{ (max_upload_size | int) * 1048576 }}
+log = {{ log_level | to_json }}
+admins_list = [{{ ('@' + admin + ':' + server_name) | to_json }}]
+new_user_displayname_suffix = ""
+
+# Fixed cache budgets are friendlier to small shared YunoHost machines.
+db_cache_capacity_mb = 128.0
+db_write_buffer_capacity_mb = 64.0
+
+{% if turn_uris_json != '[]' %}
+turn_uris = {{ turn_uris_json }}
+turn_secret_file = {{ (install_dir + '/turn-secret') | to_json }}
+turn_ttl = {{ turn_ttl | int }}
+{% endif %}
+
+[global.well_known]
+client = {{ ('https://' + domain) | to_json }}
+server = {{ (domain + ':443') | to_json }}
+support_mxid = {{ ('@' + admin + ':' + server_name) | to_json }}
+
+{% if smtp_enabled == 'true' %}
+[global.smtp]
+connection_uri_file = {{ (install_dir + '/smtp-uri') | to_json }}
+sender = {{ ('Continuwuity <' + app + '@' + domain + '>') | to_json }}
+# Email supports recovery, without opening email-only public registration.
+require_email_for_registration = false
+require_email_for_token_registration = false
+{% endif %}
+
+{% if rtc_service_url %}
+[global.matrix_rtc]
+foci = [{ type = "livekit", livekit_service_url = {{ rtc_service_url | to_json }} }]
+{% endif %}

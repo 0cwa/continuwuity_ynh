@@ -1,0 +1,23 @@
+#!/bin/bash
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+# YunoHost creates and can restore our full-data safety backup before this script.
+ynh_script_progression "Stopping Continuwuity for upgrade..."
+ynh_systemctl --service="$app" --action=stop
+continuwuity_defaults
+continuwuity_validate_settings
+
+ynh_script_progression "Updating the verified binary and managed configuration..."
+# A single binary is replaced; retain overrides, client secrets and config backups.
+ynh_setup_source --dest_dir="$install_dir"
+continuwuity_dex_setup
+continuwuity_configure
+continuwuity_permissions
+continuwuity_register_service
+
+ynh_script_progression "Starting the upgraded homeserver..."
+ynh_systemctl --service="$app" --action=start
+continuwuity_wait_ready
+ynh_script_progression "Upgrade completed for $app"

@@ -1,0 +1,80 @@
+#!/bin/bash
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+ynh_app_config_apply() (
+    # The panel handles credentials. Keep even validation and error paths out of
+    # shell tracing; the parent shell's tracing state survives this subshell.
+    set +x
+    set -eu
+    # Validate cross-field constraints before changing settings or restarting.
+    continuwuity_validate_settings
+    [[ -n "$registration_token" && "$registration_token" != *$'\n'* && "$registration_token" != *$'\r'* ]] \
+        || ynh_die "Use a nonempty registration token without line breaks."
+
+    local workdir complete=0 was_active=0 changes_started=0
+    workdir="$(mktemp -d)"
+    chmod 700 "$workdir"
+    local settings="/etc/yunohost/apps/$app/settings.yml"
+    local nginx_conf="/etc/nginx/conf.d/$domain.d/$app.conf"
+    local file
+    continuwuity_config_cleanup() {
+        local status=$? rollback_failed=0
+        trap - EXIT INT TERM
+        set +e
+        if [[ "$complete" -eq 0 && "$changes_started" -eq 1 ]]; then
+            # A failed readiness check can leave the new process running.
+            # Stop it before restoring files, then restore its prior state.
+            systemctl stop "$app.service" || rollback_failed=1
+            cp -p "$workdir/settings.yml" "$settings" || rollback_failed=1
+            cp -p "$workdir/nginx.conf" "$nginx_conf" || rollback_failed=1
+            for file in config.toml registration-token smtp-uri turn-secret; do
+                cp -p "$workdir/$file" "$install_dir/$file" || rollback_failed=1
+            done
+            systemctl reload nginx || rollback_failed=1
+            if [[ "$was_active" -eq 1 && "$rollback_failed" -eq 0 ]]; then
+                if ! systemctl restart "$app.service" || ! (continuwuity_wait_ready); then
+                    rollback_failed=1
+                fi
+            fi
+            if [[ "$rollback_failed" -eq 0 ]]; then
+                ynh_print_warn "Configuration failed; the previous settings, files and service state were restored."
+            else
+                ynh_print_warn "Configuration failed and recovery could not complete. Inspect the services and use the root-only recovery copies in $workdir."
+            fi
+            status=1
+        fi
+        # Retain the last good copies if a full disk, read-only filesystem, or
+        # service error prevents recovery; do not report a successful rollback.
+        if [[ "$rollback_failed" -eq 0 ]]; then
+            rm -rf -- "$workdir"
+        fi
+        exit "$status"
+    }
+    trap continuwuity_config_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    cp -p "$settings" "$workdir/settings.yml"
+    cp -p "$nginx_conf" "$workdir/nginx.conf"
+    for file in config.toml registration-token smtp-uri turn-secret; do
+        cp -p "$install_dir/$file" "$workdir/$file"
+    done
+    local active_state
+    active_state=$(systemctl show --property=ActiveState --value "$app.service")
+    case "$active_state" in active|activating|reloading) was_active=1 ;; esac
+
+    changes_started=1
+    _ynh_app_config_apply
+    continuwuity_write_config
+    continuwuity_permissions
+    ynh_config_add_nginx
+    if [[ "$was_active" -eq 1 ]]; then
+        ynh_systemctl --service="$app" --action=restart
+        continuwuity_wait_ready
+    fi
+    complete=1
+)
+
+ynh_app_config_run "$1"

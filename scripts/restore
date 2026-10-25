@@ -1,0 +1,38 @@
+#!/bin/bash
+
+source ../settings/scripts/_common.sh
+source /usr/share/yunohost/helpers
+source ../settings/scripts/_backup.sh
+
+ynh_script_progression "Checking the Continuwuity backup..."
+
+continuwuity_validate_data_path
+# Validate before replacing any retained data. ynh_restore deliberately skips
+# missing data for most apps; here that would risk pairing old code with a newer
+# RocksDB schema, or starting a new identity after an incomplete restore.
+[[ -d "${YNH_APP_BACKUP_DIR:?}$data_dir" ]] \
+    || ynh_die "This archive has no complete Continuwuity data snapshot. Restore a full backup containing the database and media."
+
+if [[ -e "/etc/systemd/system/$app.service" ]]; then
+    systemctl stop "$app.service"
+fi
+
+ynh_script_progression "Restoring Continuwuity and its complete data snapshot..."
+ynh_restore "$install_dir"
+# The helper replaces the old directory (moving small old directories into
+# appconfbackup); it does not merge migrated RocksDB files into the snapshot.
+ynh_restore "$data_dir"
+
+ynh_script_progression "Restoring YunoHost integrations..."
+# Reconcile an optional Dex client on this host before rendering configuration.
+# A missing configured Dex instance must fail with an actionable message.
+continuwuity_dex_setup
+continuwuity_configure
+continuwuity_permissions
+continuwuity_register_service
+
+ynh_script_progression "Starting Continuwuity..."
+ynh_systemctl --service="$app" --action=start
+continuwuity_wait_ready
+
+ynh_script_progression "Restoration completed for $app"

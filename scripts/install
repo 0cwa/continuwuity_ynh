@@ -1,0 +1,39 @@
+#!/bin/bash
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+ynh_script_progression "Preparing the permanent Matrix identity..."
+[[ -n "$password" && ! "$password" =~ [[:space:]] ]] \
+    || ynh_die "The initial administrator password cannot contain whitespace. It can be changed in a Matrix client after installation."
+server_name="${server_name:-$domain}"
+ynh_app_setting_set --key=server_name --value="$server_name"
+continuwuity_defaults
+continuwuity_validate_settings
+
+# A normal removal retains data. Never silently pair a new identity, password or
+# administrator with an old database; use a YunoHost restore for existing data.
+if [[ -n "$(find "$data_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    ynh_die "Retained data exists in $data_dir. Restore its backup, or explicitly move/remove that data before making a new homeserver."
+fi
+
+ynh_script_progression "Installing the verified upstream binary..."
+ynh_setup_source --dest_dir="$install_dir"
+continuwuity_write_config
+continuwuity_permissions
+
+ynh_script_progression "Creating the first administrator before opening the API..."
+continuwuity_bootstrap_admin
+unset password
+
+ynh_script_progression "Configuring authentication and YunoHost services..."
+continuwuity_dex_setup
+continuwuity_configure
+continuwuity_permissions
+continuwuity_register_service
+
+ynh_script_progression "Starting Continuwuity..."
+ynh_systemctl --service="$app" --action=start
+continuwuity_wait_ready
+
+ynh_script_progression "Installation completed for $app"

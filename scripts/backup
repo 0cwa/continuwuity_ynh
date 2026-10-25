@@ -1,0 +1,19 @@
+#!/bin/bash
+
+source ../settings/scripts/_common.sh
+source /usr/share/yunohost/helpers
+source ../settings/scripts/_backup.sh
+
+ynh_print_info "Creating a consistent backup of Continuwuity..."
+ynh_print_info "All database and media files are included, including before upgrades. The service is stopped only while the snapshot is copied; allow free disk space for both the complete snapshot and the resulting archive."
+
+# Always include the database and media. A RocksDB migration may make the old
+# binary unable to read retained data, so a code-only safety backup is unsafe.
+# BACKUP_CORE_ONLY and do_not_backup_data intentionally do not omit this copy.
+continuwuity_snapshot_data
+
+ynh_backup "$install_dir"
+ynh_backup "/etc/nginx/conf.d/$domain.d/$app.conf"
+ynh_backup "/etc/systemd/system/$app.service"
+
+ynh_print_info "The consistent data snapshot is ready for YunoHost to archive."

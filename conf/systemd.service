@@ -1,0 +1,47 @@
+[Unit]
+Description=Continuwuity Matrix homeserver (__APP__)
+Documentation=https://continuwuity.org/
+Wants=network-online.target __DEX_SERVICE__
+After=network-online.target nginx.service __DEX_SERVICE__
+# Continue trying after a temporary external identity-provider/network outage.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=__APP__
+Group=__APP__
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/continuwuity --config __INSTALL_DIR__/config.toml --config __INSTALL_DIR__/overrides.toml --config __INSTALL_DIR__/oidc.toml
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+TimeoutStopSec=240
+UMask=0077
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=__APP__
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+# Data resides under /home/yunohost.app; allow only this instance through.
+ProtectHome=read-only
+ReadWritePaths=__DATA_DIR__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

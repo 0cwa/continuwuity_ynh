@@ -1,0 +1,97 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/manifest.v2.schema.json
+packaging_format = 2
+
+id = "continuwuity"
+name = "Continuwuity"
+description.en = "Community maintained Matrix homeserver with optional YunoHost login through Dex"
+version = "26.9.1~ynh1"
+maintainers = ["0cwa"]
+
+[upstream]
+license = "Apache-2.0"
+website = "https://continuwuity.org/"
+admindoc = "https://continuwuity.org/deploying/generic"
+userdoc = "https://continuwuity.org/authentication/"
+code = "https://forgejo.ellis.link/continuwuation/continuwuity"
+
+[integration]
+yunohost = ">= 12.1.17"
+helpers_version = "2.1"
+architectures = ["amd64", "arm64"]
+multi_instance = true
+# Password mode has independent accounts. Optional Dex provides YunoHost
+# credentials through OIDC, rather than a direct LDAP or SSOwat integration.
+ldap = false
+sso = false
+disk = "300M"
+ram.build = "100M"
+ram.runtime = "512M"
+
+[install]
+    [install.domain]
+    type = "domain"
+
+    [install.server_name]
+    ask.en = "Matrix identity domain (leave empty to use the installation domain)"
+    help.en = "The permanent suffix in @user:example.org. A different domain must already exist in YunoHost. This identity cannot be changed after installation."
+    type = "string"
+    optional = true
+    default = ""
+
+    [install.admin]
+    type = "user"
+    help.en = "This YunoHost username will become the first Matrix administrator. The Matrix account has its own initial password."
+
+    [install.password]
+    help.en = "Independent of the YunoHost password. Required in Dex mode to link the administrator account. This initial password cannot contain whitespace; it can be changed in a Matrix client later."
+    type = "password"
+
+    [install.auth_type]
+    ask.en = "Authentication"
+    type = "select"
+    choices.password = "Local Matrix accounts (widest client compatibility)"
+    choices.dex = "YunoHost accounts through Dex (requires an installed Dex app and OAuth-capable clients)"
+    default = "password"
+
+    [install.dex_app]
+    ask.en = "Existing Dex application"
+    help.en = "Install Dex with working HTTPS first. Its default LDAP connector admits all YunoHost users. Continuwuity registers its OIDC client automatically."
+    type = "app"
+    filter = "match(id, '^dex(__[0-9]+)?$')"
+    visible = "auth_type == 'dex'"
+    optional = true
+
+[resources]
+    [resources.sources.main]
+    # Use the release's generic static binaries, not CPU-specific maxperf builds.
+    # Checksums verified against both downloaded v26.9.1 assets.
+    amd64.url = "https://forgejo.ellis.link/continuwuation/continuwuity/releases/download/v26.9.1/conduwuit-linux-static-amd64"
+    amd64.sha256 = "7beff208482cf9c7bb35c4a393cb7a7b2f241d2e2c0c7fe3c0b6a8d4add6b2d7"
+    arm64.url = "https://forgejo.ellis.link/continuwuation/continuwuity/releases/download/v26.9.1/conduwuit-linux-static-arm64"
+    arm64.sha256 = "f70e20f17a3032b37db3f00eee3814b125dd0f9ab8c5dc72812c8264dc2548c5"
+    extract = false
+    rename = "continuwuity"
+
+    [resources.system_user]
+    allow_email = true
+
+    [resources.install_dir]
+    owner = "root:rwx"
+    group = "__APP__:rx"
+
+    [resources.data_dir]
+    owner = "__APP__:rwx"
+    group = "__APP__:---"
+
+    [resources.permissions.main]
+    url = "/"
+    allowed = "visitors"
+    auth_header = false
+    protected = true
+
+    [resources.ports]
+    main.default = 8008
+    # The backend listens on loopback. Only YunoHost's HTTPS port is public.
+
+    [resources.apt]
+    packages = ["ca-certificates", "curl", "python3", "python3-yaml"]

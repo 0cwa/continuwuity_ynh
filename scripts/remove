@@ -1,0 +1,18 @@
+#!/bin/bash
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+ynh_script_progression "Removing Continuwuity services..."
+ynh_config_remove_systemd
+if yunohost service status "$app" >/dev/null 2>&1; then
+    yunohost service remove "$app"
+fi
+continuwuity_dex_remove
+if [[ -n "${server_name:-}" && -f "/etc/nginx/conf.d/$server_name.d/$app-well-known.conf" ]]; then
+    ynh_safe_rm "/etc/nginx/conf.d/$server_name.d/$app-well-known.conf"
+fi
+ynh_config_remove_nginx
+# Packaging v2 resources remove binaries, user and permissions. The data_dir is
+# retained unless the administrator explicitly chooses removal with --purge.
+ynh_script_progression "Removal completed for $app"

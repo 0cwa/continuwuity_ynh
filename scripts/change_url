@@ -1,0 +1,172 @@
+#!/bin/bash
+
+source _common.sh
+source /usr/share/yunohost/helpers
+
+# The API URL can move. Matrix IDs and signing identity must never be renamed.
+# YunoHost rolls back its primary nginx file after a failure, but it does not
+# roll back app configuration, a separate discovery vhost, or a Dex client.
+# Keep a transaction here so those integrations continue to agree.
+continuwuity_change_url() (
+    # Keep YunoHost's parent error/EXIT traps intact.
+    set -eu
+    continuwuity_validate_settings
+    [[ "$app" =~ ^continuwuity(__[0-9]+)?$ ]] || ynh_die "Invalid application ID."
+    [[ -n "${old_domain:-}" && "$old_domain" != "$domain" ]] \
+        || ynh_die "Only a change to another root domain is supported."
+
+    local old_nginx="/etc/nginx/conf.d/$old_domain.d/$app.conf"
+    local new_nginx="/etc/nginx/conf.d/$domain.d/$app.conf"
+    local delegation="/etc/nginx/conf.d/$server_name.d/$app-well-known.conf"
+    local settings_file="/etc/yunohost/apps/$app/settings.yml"
+    [[ -f "$old_nginx" && -f "$settings_file" ]] \
+        || ynh_die "The installed nginx configuration or app settings are missing. Repair them before changing domains."
+    [[ ! -e "$new_nginx" && ! -L "$new_nginx" ]] \
+        || ynh_die "A configuration for this app already exists on the new domain. Resolve it before changing domains."
+
+    local initial_state restart_required=0 dex_restart_required=0
+    initial_state="$(systemctl show --property=ActiveState --value "$app.service")"
+    case "$initial_state" in
+        active|activating|reloading) restart_required=1 ;;
+        inactive|failed|deactivating) ;;
+        *) ynh_die "Cannot determine the homeserver state; the domain has not been changed." ;;
+    esac
+
+    local -a managed_files=(
+        "$install_dir/config.toml"
+        "$install_dir/overrides.toml"
+        "$install_dir/oidc.toml"
+        "$install_dir/oidc-client-secret"
+        "$install_dir/registration-token"
+        "$install_dir/turn-secret"
+        "$install_dir/smtp-uri"
+        "/etc/systemd/system/$app.service"
+        "$old_nginx" "$new_nginx" "$delegation" "$settings_file"
+    )
+    # Preflight the selected Dex instance before stopping or changing anything.
+    # Save its exact owned client fragment, so rollback does not require working
+    # HTTPS discovery (which may itself be the reason the change failed).
+    if [[ "$auth_type" == dex ]]; then
+        _continuwuity_dex_load
+        managed_files+=("$dex_client_file")
+        initial_state="$(systemctl show --property=ActiveState --value "$dex_app.service")"
+        case "$initial_state" in
+            active|activating|reloading) dex_restart_required=1 ;;
+            inactive|failed|deactivating) ;;
+            *) ynh_die "Cannot determine the Dex service state; the domain has not been changed." ;;
+        esac
+    fi
+
+    local transaction_dir started=0 committed=0 dex_touched=0
+    local -a was_present=()
+    transaction_dir="$(mktemp -d)"
+    chmod 700 "$transaction_dir"
+
+    continuwuity_change_url_cleanup() {
+        local status=$? rollback_failed=0 index file replacement
+        trap - EXIT INT TERM
+        set +e
+        if [[ "$started" -eq 1 && "$committed" -eq 0 ]]; then
+            ynh_print_warn "Domain change failed; restoring the previous configuration and service state."
+            systemctl stop "$app.service" || rollback_failed=1
+            for index in "${!managed_files[@]}"; do
+                file="${managed_files[$index]}"
+                if [[ "${was_present[$index]}" -eq 1 ]]; then
+                    # Stage beside each destination for an atomic rename, even
+                    # if /tmp and the installation directory use different disks.
+                    replacement="$(mktemp "$(dirname -- "$file")/.$app-restore.XXXXXXXX")"
+                    if [[ -n "$replacement" ]] \
+                        && cp --archive -- "${transaction_dir}/$index" "$replacement" \
+                        && mv -f -- "$replacement" "$file"; then
+                        :
+                    else
+                        [[ -z "$replacement" ]] || rm -f -- "$replacement"
+                        rollback_failed=1
+                    fi
+                else
+                    rm -f -- "$file" || rollback_failed=1
+                fi
+            done
+            # All templates and settings now describe the previous web domain.
+            domain="$old_domain"
+            path="${old_path:-/}"
+            yunohost tools shell -c 'from yunohost.app import regen_mail_app_user_config_for_dovecot_and_postfix; regen_mail_app_user_config_for_dovecot_and_postfix()' \
+                || rollback_failed=1
+            systemctl daemon-reload || rollback_failed=1
+            if [[ "$dex_touched" -eq 1 ]]; then
+                if [[ "$dex_restart_required" -eq 1 ]]; then
+                    systemctl restart "$dex_app.service" || rollback_failed=1
+                else
+                    systemctl stop "$dex_app.service" || rollback_failed=1
+                fi
+            fi
+            yunohost app ssowatconf || rollback_failed=1
+            if nginx -t; then
+                ynh_systemctl --service=nginx --action=reload || rollback_failed=1
+            else
+                rollback_failed=1
+            fi
+            if [[ "$restart_required" -eq 1 ]]; then
+                if ynh_systemctl --service="$app" --action=start; then
+                    # The regular readiness helper may exit; contain it so
+                    # temporary credential copies are cleaned even if it fails.
+                    (continuwuity_wait_ready) || rollback_failed=1
+                else
+                    rollback_failed=1
+                fi
+            fi
+            if [[ "$rollback_failed" -ne 0 ]]; then
+                ynh_print_warn "Some recovery steps failed. Inspect nginx, Dex and $app before retrying. The root-only recovery copies are retained in $transaction_dir."
+            fi
+            status=1
+        fi
+        if [[ "$rollback_failed" -eq 0 ]]; then
+            rm -rf -- "$transaction_dir"
+        fi
+        exit "$status"
+    }
+    trap continuwuity_change_url_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    local index file
+    for index in "${!managed_files[@]}"; do
+        file="${managed_files[$index]}"
+        [[ ! -L "$file" ]] || ynh_die "Managed file $file is a symlink; resolve it before changing domains."
+        if [[ -e "$file" ]]; then
+            [[ -f "$file" ]] || ynh_die "Managed configuration $file is not a regular file."
+            cp --archive -- "$file" "$transaction_dir/$index"
+            was_present[$index]=1
+        else
+            was_present[$index]=0
+        fi
+    done
+
+    ynh_script_progression "Moving the API while preserving the Matrix identity $server_name..."
+    started=1
+    systemctl stop "$app.service"
+    # The core normally persists the new domain only after this script returns.
+    # Publish it within the transaction so SSO permissions and the app's SMTP
+    # sender mapping follow the new URL; the saved settings restore it on error.
+    ynh_app_setting_set --key=domain --value="$domain"
+    yunohost tools shell -c 'from yunohost.app import regen_mail_app_user_config_for_dovecot_and_postfix; regen_mail_app_user_config_for_dovecot_and_postfix()'
+    # Returning the API to its identity domain would otherwise create duplicate
+    # exact /.well-known locations when the nginx helper immediately reloads it.
+    if [[ "$domain" == "$server_name" && -f "$delegation" ]]; then
+        rm -f -- "$delegation"
+        ynh_permission_url --permission=main --remove_url="$server_name/.well-known/matrix"
+    fi
+    ynh_config_change_url_nginx
+    [[ "$auth_type" != dex ]] || dex_touched=1
+    continuwuity_dex_setup
+    continuwuity_configure
+    continuwuity_permissions
+    if [[ "$restart_required" -eq 1 ]]; then
+        ynh_systemctl --service="$app" --action=start
+        continuwuity_wait_ready
+    fi
+    ynh_script_progression "API URL changed; retain the domain $server_name and its TLS certificate."
+    committed=1
+)
+
+continuwuity_change_url

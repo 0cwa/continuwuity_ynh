@@ -1,0 +1,97 @@
+#:schema https://raw.githubusercontent.com/YunoHost/apps/main/schemas/config_panel.v1.schema.json
+version = "1.0"
+
+[main]
+name.en = "Homeserver"
+
+    [main.identity]
+    name.en = "Identity and authentication"
+
+        [main.identity.server_name]
+        ask.en = "Permanent Matrix identity domain"
+        type = "string"
+        readonly = true
+
+        [main.identity.admin]
+        ask.en = "Initial Matrix administrator"
+        type = "string"
+        readonly = true
+
+        [main.identity.auth_type]
+        ask.en = "Authentication mode"
+        type = "string"
+        readonly = true
+        help.en = "Changing authentication requires an account migration. See doc/DEX.md."
+
+    [main.accounts]
+    name.en = "Local accounts"
+
+        [main.accounts.allow_registration]
+        ask.en = "Allow local account registration with a token"
+        type = "boolean"
+        yes = "true"
+        no = "false"
+        help.en = "New local accounts must supply the secret token below. In Dex mode, successful identity-provider authentication controls account creation instead."
+
+        [main.accounts.registration_token]
+        ask.en = "Local registration token"
+        type = "password"
+        redact = true
+        optional = false
+        help.en = "Share only with invited users. Rotating it does not revoke tokens created through the upstream admin commands."
+
+        [main.accounts.smtp_enabled]
+        ask.en = "Enable YunoHost email for account recovery"
+        type = "boolean"
+        yes = "true"
+        no = "false"
+        help.en = "Uses the app's SMTP identity over STARTTLS on port 587. The installation domain needs a trusted TLS certificate and working mail DNS."
+
+    [main.limits]
+    name.en = "Uploads and logging"
+
+        [main.limits.max_upload_size]
+        ask.en = "Maximum upload size (MiB)"
+        type = "number"
+        min = 1
+        max = 1024
+
+        [main.limits.log_level]
+        ask.en = "Log level"
+        type = "select"
+        choices = ["error", "warn", "info", "debug"]
+        help.en = "Use debug temporarily when troubleshooting; detailed logs can contain personal information."
+
+[calls]
+name.en = "Calls"
+
+    [calls.turn]
+    name.en = "Existing TURN server"
+
+        [calls.turn.turn_uris]
+        ask.en = "TURN URIs"
+        type = "tags"
+        optional = true
+        help.en = "Comma-separated turn: or turns: URIs, for example turn:turn.example.org:3478?transport=udp. This configures an existing relay; it does not install one or open relay ports."
+
+        [calls.turn.turn_secret]
+        ask.en = "TURN shared secret"
+        type = "password"
+        optional = true
+        redact = true
+        help.en = "Must match the TURN server's static authentication secret."
+
+        [calls.turn.turn_ttl]
+        ask.en = "TURN credential lifetime (seconds)"
+        type = "number"
+        min = 60
+        max = 604800
+
+    [calls.matrixrtc]
+    name.en = "Existing MatrixRTC service"
+
+        [calls.matrixrtc.rtc_service_url]
+        ask.en = "LiveKit authorization service URL"
+        type = "url"
+        optional = true
+        help.en = "HTTPS URL of an existing MatrixRTC LiveKit authorization service, not the LiveKit websocket URL. Leave empty to disable its discovery."

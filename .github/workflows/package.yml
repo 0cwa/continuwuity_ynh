@@ -1,0 +1,55 @@
+name: Package validation
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  static:
+    name: Metadata, lifecycle tests and nginx
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install validation tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends --yes nginx shellcheck
+          python3 -m venv .venv
+          .venv/bin/pip install -r tests/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Lifecycle and configuration regression tests
+        run: python -m unittest discover -s tests -v
+      - name: ShellCheck
+        # YunoHost supplies settings and helpers dynamically. Trap callbacks
+        # trigger informational unreachable-code diagnostics in ShellCheck 0.9.
+        run: shellcheck --severity=warning --external-sources --source-path=SCRIPTDIR --exclude=SC1091,SC2034,SC2154 scripts/*
+      - name: Official YunoHost metadata schemas
+        run: python tests/validate_schema.py --download
+      - name: Real nginx configuration validation
+        run: python tests/check_nginx.py
+
+  upstream:
+    name: Pinned upstream Matrix and restore smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install template renderer
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r tests/requirements.txt
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Verify and exercise the manifest's release binary
+        run: python tests/smoke_upstream.py --download
