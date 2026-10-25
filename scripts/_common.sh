@@ -5,6 +5,9 @@
 source "$(dirname -- "${BASH_SOURCE[0]}")/_dex.sh"
 
 continuwuity_defaults() {
+    # Some YunoHost helpers re-enable xtrace unconditionally; prevent later
+    # secret-bearing operations from being recorded in operation logs.
+    set +x
     ynh_app_setting_set_default --key=server_name --value="$domain"
     ynh_app_setting_set_default --key=auth_type --value=password
     ynh_app_setting_set_default --key=dex_app --value=""
@@ -26,6 +29,9 @@ continuwuity_defaults() {
 }
 
 continuwuity_validate_settings() {
+    # Some YunoHost helpers re-enable xtrace unconditionally; prevent later
+    # secret-bearing operations from being recorded in operation logs.
+    set +x
     # These values also enter nginx filenames, service files and permission URLs.
     local hostname
     for hostname in "$domain" "$server_name"; do
@@ -86,6 +92,9 @@ PY
 )
 
 continuwuity_write_config() {
+    # Some YunoHost helpers re-enable xtrace unconditionally; prevent later
+    # secret-bearing operations from being recorded in operation logs.
+    set +x
     continuwuity_validate_settings
     continuwuity_check_smtp
     ynh_config_add --jinja --template=config.toml --destination="$install_dir/config.toml"
