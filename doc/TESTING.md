@@ -16,6 +16,12 @@ ownership/rollback, and configuration or domain-change transactions. Service
 and YunoHost commands in lifecycle tests are controlled fixtures; these tests
 check decisions and file preservation, not a full operating-system install.
 
+Metadata compatibility checks decode `manifest.toml`, `tests.toml`, and
+`config_panel.toml` with both YunoHost's `toml==0.10.2` decoder and Python's
+`tomllib`, requiring identical structures. This catches cases such as translated
+multiline help being moved into an invalid top-level language field by the
+YunoHost decoder, even when the file passes a schema check using `tomllib`.
+
 The smoke test executes the actual manifest-pinned upstream binary. It verifies
 its checksum, starts real RocksDB and local HTTP listeners, bootstraps an admin
 offline, logs in with the exact initial password, checks discovery and closed

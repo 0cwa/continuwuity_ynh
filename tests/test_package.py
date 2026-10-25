@@ -1,11 +1,13 @@
 """Validate the package's public configuration and install-time safety invariants."""
 
 import json
+from collections import OrderedDict
 from pathlib import Path
 import subprocess
 import tomllib
 import unittest
 
+import toml
 from jinja2 import Environment, StrictUndefined
 
 
@@ -104,6 +106,20 @@ class PackageTests(unittest.TestCase):
             with self.subTest(name=name):
                 parsed = tomllib.loads((PACKAGE / name).read_text())
                 self.assertTrue(parsed)
+
+    def test_metadata_matches_yunohost_toml_decoder(self):
+        # YunoHost 12's read_toml uses python-toml with OrderedDict, rather
+        # than tomllib. Dotted multiline translation keys can become stray
+        # top-level "en" options in that decoder and break manifest GET/form
+        # validation even when the modern TOML parser and JSON schemas pass.
+        for name in ("manifest.toml", "config_panel.toml", "tests.toml"):
+            with self.subTest(name=name):
+                source = (PACKAGE / name).read_text()
+                self.assertEqual(
+                    toml.loads(source, _dict=OrderedDict),
+                    tomllib.loads(source),
+                    f"{name} must decode identically in YunoHost and tomllib",
+                )
 
 
 if __name__ == "__main__":
