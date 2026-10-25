@@ -33,6 +33,21 @@ systemctl() {
         *) return 99 ;;
     esac
 }
+df() {
+    if [[ "${FAIL_CAPACITY:-0}" == 1 ]]; then
+        printf 'Filesystem 1B-blocks Used Available Capacity Mounted\n'
+        printf 'limited 1000 999 1 99%% /\n'
+    else
+        command df "$@"
+    fi
+}
+findmnt() {
+    if [[ "${TEST_MEDIA_MOUNT:-0}" == 1 ]]; then
+        printf '/\n%s\n' "$data_dir/media"
+    else
+        command findmnt "$@"
+    fi
+}
 ynh_systemctl() {
     local action= service= argument
     for argument in "$@"; do
@@ -141,6 +156,20 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.snapshot / "CURRENT").is_file())
         self.assertTrue((self.snapshot / "media/example").is_file())
+
+    def test_insufficient_staging_space_fails_before_stopping_database(self):
+        result = self.run_snapshot(FAIL_CAPACITY="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Insufficient free space", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
+
+    def test_mounted_media_is_rejected_before_service_stop(self):
+        result = self.run_snapshot(TEST_MEDIA_MOUNT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Mounted media", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
 
     def test_unsafe_data_path_is_rejected_before_stop(self):
         result = self.run_snapshot(data_dir=str(self.root / "source"))
