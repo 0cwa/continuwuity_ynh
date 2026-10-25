@@ -30,10 +30,19 @@ ram.runtime = "512M"
 [install]
     [install.domain]
     type = "domain"
+    help.en = """
+Recommended: a dedicated subdomain such as matrix.example.org. YunoHost may preselect or star its main domain; choose the hostname you want for this app. This is the public homeserver address: it serves the Matrix API, a welcome page, and personal account pages. A chat client and a server administration dashboard are not included. Manage package settings in YunoHost and server users/rooms through a Matrix client's admin room.
+
+This app reserves the whole selected web domain at /. Choosing example.org assigns https://example.org/ to Continuwuity and prevents another web app from sharing that domain. Existing homepage redirects may still affect what opens there; YunoHost's own admin and portal URLs remain available. To keep your root website or portal and still get @alice:example.org, choose matrix.example.org here and enter example.org in the Matrix identity field below.
+"""
 
     [install.server_name]
-    ask.en = "Matrix identity domain (leave empty to use the installation domain)"
-    help.en = "The permanent suffix in @user:example.org. A different domain must already exist in YunoHost. This identity cannot be changed after installation."
+    ask.en = "Permanent Matrix identity domain (for example, example.org)"
+    help.en = """
+This is the suffix after : in Matrix IDs. With installation domain matrix.example.org, enter example.org for @alice:example.org, or leave this field empty for @alice:matrix.example.org. Using example.org here does not put the homeserver on your root homepage: the package adds only Matrix discovery URLs there.
+
+A different identity domain must already exist on this YunoHost server, with working DNS and HTTPS and available /.well-known/matrix/* paths. You must keep control of this domain. The Matrix identity cannot be renamed after installation, even if you later change the installation domain.
+"""
     type = "string"
     optional = true
     default = ""

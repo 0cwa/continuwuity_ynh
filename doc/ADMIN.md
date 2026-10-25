@@ -1,5 +1,29 @@
 # Administrator guide
 
+## Web pages and administration
+
+The **installation domain** is the public homeserver address. It serves the
+Matrix client and federation APIs, OAuth endpoints, and Continuwuity's own
+welcome and personal account pages. It does not install a chat client or a
+graphical dashboard for server-wide Matrix administration.
+
+For an installation on `matrix.example.org` with identity domain `example.org`:
+
+| Purpose | Where to go |
+| --- | --- |
+| Welcome/status page | `https://matrix.example.org/` |
+| Your own account and device/session settings | `https://matrix.example.org/_continuwuity/account/` |
+| Chatting | A separately installed Matrix client connected to `https://matrix.example.org` |
+| Package settings: registration, email, upload limits, calls | Existing YunoHost webadmin → Apps → Continuwuity → Config panel |
+| Matrix server administration: users, rooms, federation | The `#admins:example.org` room in a Matrix client, using the administrator account |
+| Service health and logs | YunoHost Services or the shell commands below |
+
+YunoHost's webadmin remains at its existing `/yunohost/admin` address. Choosing
+an installation domain does not create another YunoHost administration portal.
+Continuwuity's **Manage your account** page controls the signed-in user's own
+account; use the Matrix admin room for server-wide operations. See the upstream
+[admin command reference](https://continuwuity.org/reference/admin/).
+
 ## Layout and service management
 
 For a first installation, application settings are in
@@ -32,8 +56,8 @@ configured and the service starts. Its Matrix username matches the selected
 YunoHost username, but its local password is independent. The account is listed
 in `admins_list` and is also made the initial admin by upstream.
 
-Open the Continuwuity admin room in a Matrix client. Its bot accepts upstream
-commands such as:
+Open the Continuwuity admin room, `#admins:<identity-domain>`, in a Matrix client.
+Its bot accepts upstream commands such as:
 
 ```text
 !admin users create-user alice
@@ -111,6 +135,38 @@ package refreshes YunoHost's SMTP sender mapping for the new domain.
 
 ## Federation, delegation and domain changes
 
+### Choosing a root domain or a subdomain
+
+**Recommended: install on `matrix.example.org`, with `example.org` as the
+permanent Matrix identity.** This keeps IDs such as `@alice:example.org` while
+letting the root domain keep its normal website or YunoHost portal.
+
+The root/apex domain is the bare hostname, such as `example.org`; the root path
+is `/` on any hostname. This package always installs at the root path of its
+chosen web domain and reserves the whole domain for the app. Installing on
+`example.org` assigns `https://example.org/` to Continuwuity's welcome page and
+prevents another packaged app from sharing that hostname, even at `/blog`.
+YunoHost checks for conflicting apps before installation. Separate subdomains
+such as `www.example.org`, `chat.example.org`, and `auth.example.org` remain
+independent and may host other apps. Installing at `/matrix` is unsupported.
+
+Using `example.org` only as the **identity domain** has a smaller effect: the
+package adds the three exact discovery routes listed below. It can coexist with
+a normal website there. If that website already supplies Matrix discovery for
+another homeserver, resolve the conflict before installing; two homeservers
+cannot use the same Matrix identity domain.
+
+The package does not change YunoHost's main domain or the identity domain's
+default app. Keep that domain's website/portal choice as desired; you do not need
+to set Continuwuity as its default app for discovery to work. YunoHost's own
+administration and portal routes remain separate from the homeserver.
+If the installation domain already has a homepage redirect (a default app or
+public-apps-page setting), that redirect can still control what opens at `/`.
+Check those domain settings if the homeserver address redirects elsewhere;
+the Matrix API and discovery paths are separate from that root-only redirect.
+
+### How discovery connects the domains
+
 The web/API domain and permanent identity domain may differ. For example:
 
 | Setting | Example |
@@ -120,18 +176,31 @@ The web/API domain and permanent identity domain may differ. For example:
 | User ID | `@alice:example.org` |
 | Client discovery | `https://example.org/.well-known/matrix/client` points to `https://matrix.example.org` |
 | Federation discovery | `https://example.org/.well-known/matrix/server` advertises `matrix.example.org:443` |
+| Support discovery | `https://example.org/.well-known/matrix/support` publishes the configured administrator contact |
 
 The package adds only its own discovery snippet on the identity domain. Existing
 conflicting Matrix discovery rules are not overwritten. Both domains must exist
 in YunoHost and retain working DNS and HTTPS certificates. The Matrix API stays
 public at the reverse proxy: Matrix validates user tokens and federation
 signatures itself. SSOwat login redirects would break clients and federation.
+See upstream's [delegation guide](https://continuwuity.org/guides/delegation) for
+the protocol. This package manages discovery on the same YunoHost server; an
+identity domain whose website is hosted elsewhere needs a separately planned
+delegation setup.
+
+### What can change later
 
 YunoHost's **Change URL** can move the API to another dedicated domain. It
 preserves `server_name`, database identity and all Matrix IDs; updates discovery,
 SMTP mapping and the optional Dex callback; and rolls back its own files and
 Dex fragment if reconfiguration fails. Keep the old identity domain indefinitely.
 Changing to a subpath is unsupported.
+
+For example, installing directly on `example.org` now and moving the API to
+`matrix.example.org` later can free the root homepage while keeping
+`@alice:example.org`. But installing on `matrix.example.org` with an empty identity
+field fixes the identity as `matrix.example.org`: moving the API later does not
+shorten those IDs to `@alice:example.org`. Decide that suffix before first use.
 
 Before moving a live server, take a full backup and ensure the new domain is
 ready. Discovery is cached by clients and remote servers, so a move can cause

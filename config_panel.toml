@@ -7,10 +7,17 @@ name.en = "Homeserver"
     [main.identity]
     name.en = "Identity and authentication"
 
+        [main.identity.domain]
+        ask.en = "Installation domain (web/API address)"
+        type = "string"
+        readonly = true
+        help.en = "Serves the Matrix API, welcome page, and personal account pages. Manage package settings here and Matrix users/rooms in a client's admin room. Move this address with YunoHost's Change URL action; the Matrix identity below stays the same."
+
         [main.identity.server_name]
         ask.en = "Permanent Matrix identity domain"
         type = "string"
         readonly = true
+        help.en = "Permanent suffix in @user:example.org and room aliases. It can differ from the installation domain above. Moving the web/API address does not rename Matrix IDs; keep this domain's DNS and HTTPS working."
 
         [main.identity.admin]
         ask.en = "Initial Matrix administrator"

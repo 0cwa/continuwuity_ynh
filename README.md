@@ -27,6 +27,59 @@ a production-validated release. See [testing](doc/TESTING.md).
 
 ## Install
 
+### Choose the homeserver address and Matrix identity
+
+**Recommended: install on `matrix.example.org` and set the Matrix identity domain
+to `example.org`.** This gives users IDs such as `@alice:example.org` while
+keeping `https://example.org/` available for your website or YunoHost portal.
+YunoHost may preselect or star its main domain in the installer; select your
+dedicated Matrix subdomain instead if you want this layout.
+
+The installer asks for two different domains:
+
+- **Installation domain:** the public address used by Matrix clients and other
+  homeservers. Opening it in a browser shows a Continuwuity welcome/status page
+  with a link to **Manage your account**. The package includes personal account
+  and login pages, but no chat client or graphical server-administration portal.
+- **Permanent Matrix identity domain:** the suffix after `:` in user IDs and room
+  aliases. Leaving this field empty uses the installation domain. This identity
+  is permanent, even if you move the web/API address later.
+
+| Installation domain | Matrix identity field | Example user ID | What happens at `https://example.org/`? |
+| --- | --- | --- | --- |
+| `matrix.example.org` | `example.org` | `@alice:example.org` | Your website/portal can stay; the package adds only Matrix discovery URLs. **Recommended.** |
+| `matrix.example.org` | Empty | `@alice:matrix.example.org` | This package does not use `example.org`. |
+| `example.org` | Empty or `example.org` | `@alice:example.org` | The web root is assigned to Continuwuity, normally showing its welcome page. That web domain is dedicated to this app. |
+
+Choosing the root/apex domain (`example.org`) is supported if you deliberately
+want to dedicate it to the homeserver. This package reserves the **whole chosen
+web domain**, so another website or app cannot share that hostname, including at
+a subpath such as `/blog`. It does not reserve other subdomains. Installation at
+`https://example.org/matrix` is unsupported.
+YunoHost rejects installations that conflict with another app already on that
+hostname. Its own `/yunohost/admin` and `/yunohost/sso/` routes remain available.
+Any existing homepage redirect is a separate domain setting and can still affect
+what opens at `/`; this package does not change that setting.
+
+With the recommended separate-domain layout, both domains must already exist on
+this YunoHost server and have working DNS and HTTPS. The identity domain must have
+available `/.well-known/matrix/client`, `/.well-known/matrix/server`, and
+`/.well-known/matrix/support` paths. The package configures these automatically;
+they tell clients and other servers where the homeserver is. An existing website
+can keep its normal pages. Keep control of the identity domain permanently.
+Both hostnames must reach this server for the automatic discovery setup. You do
+not need to make Continuwuity the root domain's default app.
+
+**Where do I administer it?** Use your existing YunoHost webadmin, under
+**Apps → Continuwuity → Config panel**, for package settings. Manage Matrix users,
+rooms, and other server operations in Continuwuity's admin room from a separate
+Matrix client, using the administrator account created during installation.
+Choosing a domain does not create a new YunoHost admin portal. See the
+[administrator guide](doc/ADMIN.md#web-pages-and-administration) for the entry
+points and [domain details](doc/ADMIN.md#federation-delegation-and-domain-changes).
+
+### Installation steps
+
 1. Add a dedicated web domain to YunoHost, for example `matrix.example.org`, and
    configure its DNS and a trusted HTTPS certificate.
 2. Decide the permanent Matrix identity. Leaving the identity question empty
@@ -57,7 +110,8 @@ The installer asks for credentials interactively. There is no need to put
 passwords or GitHub tokens in a command line.
 
 Connect a Matrix client to `https://matrix.example.org`. The root web page is
-Continuwuity's own account interface; a full chat client is installed separately.
+Continuwuity's welcome page, with a link to personal account management; a full
+chat client is installed separately, for example on `chat.example.org`.
 In password mode, log in with the selected Matrix username and initial password.
 In Dex mode, follow the browser flow and link the reserved administrator account
 using its initial Matrix password.
