@@ -190,6 +190,8 @@ class SnapshotTests(unittest.TestCase):
     def test_data_root_or_nested_mount_is_rejected_before_service_stop(self):
         for flag in ("TEST_DATA_MOUNT", "TEST_NESTED_MOUNT"):
             with self.subTest(flag=flag):
+                # Each subtest starts with a fresh event log.
+                self.events.write_text("")
                 result = self.run_snapshot(**{flag: "1"})
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Mounted media", result.stderr)
