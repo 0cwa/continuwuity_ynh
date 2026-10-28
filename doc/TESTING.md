@@ -2,13 +2,8 @@
 
 ## Automated checks
 
-Install the test dependencies and run:
-
-```bash
-python3 -m pip install -r tests/requirements.txt
-python3 -m unittest discover -s tests -v
-python3 tests/smoke_upstream.py --download
-```
+See [Contributing](../CONTRIBUTING.md#local-validation) for dependencies and the
+commands used locally and in CI.
 
 The unit tests cover metadata and rendered configuration, bootstrap credential
 handling, consistent stopped snapshots and failure recovery, Dex client
@@ -29,19 +24,21 @@ registration, creates room history and media, restores a stopped data copy, and
 checks invitation-token registration. Its isolated local SMTP fixture checks
 upstream's SMTP startup path without sending real mail.
 
-The CI workflow runs these checks on supported runners. Nginx configuration and
-YunoHost schema checks are additional gates where enabled in that workflow.
-No CI badge should be read as proof of a completed YunoHost installation.
+The [CI workflow](../.github/workflows/package.yml) also runs ShellCheck, official
+YunoHost metadata schema validation and Nginx configuration validation. Consult
+the workflow for runner selection; no CI badge is proof of a completed YunoHost
+installation or validation on every supported architecture.
 
 ## Required YunoHost acceptance run
 
 Run YunoHost's maintained
 [package_check](https://github.com/YunoHost/package_check) against a disposable
-YunoHost 12 host, using the scenarios in `tests.toml`. A real Dex scenario needs
-an existing Dex app with a trusted certificate and working HTTPS discovery;
-the default local-password test intentionally does not fabricate that setup.
-The [official app-testing guide](https://doc.yunohost.org/en/dev/packaging/test/)
-documents the current runner setup and invocation.
+YunoHost host meeting the minimum in `manifest.toml`, using the scenarios in
+`tests.toml`. A real Dex scenario needs an existing Dex app with a trusted
+certificate and working HTTPS discovery; the default local-password test
+intentionally does not fabricate that setup. The
+[official app-testing guide](https://doc.yunohost.org/en/dev/packaging/test/)
+documents the runner setup and invocation.
 
 | Scenario | Required observations |
 | --- | --- |
@@ -66,15 +63,5 @@ browser-driven Dex account linking and external email delivery require the
 corresponding real services. They have not been simulated into a production
 readiness claim.
 
-## Updating the packaged version
-
-Use the latest suitable stable release from the upstream Forgejo repository.
-Read its release notes and inspect the tagged configuration before updating.
-Download both generic static architecture assets, compute SHA256 for their
-actual bytes, and update the manifest URLs, hashes and version as one change.
-Review configuration or database migration implications, rerun automated checks
-and the YunoHost upgrade/rollback scenarios, then publish the update.
-
-Retain the complete-data backup policy while upstream uses RocksDB migrations.
-Do not reuse binaries or hashes from an unrelated tag or a CPU-specific maxperf
-build. Future source assets must be inspected rather than assumed compatible.
+See [release maintenance](../CONTRIBUTING.md#updating-the-packaged-release) for
+version, asset and checksum updates.

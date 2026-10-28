@@ -44,6 +44,8 @@ source() {
     elif [[ "$1" == "/usr/share/yunohost/helpers" ]]; then
         # Simulate a helper library which has re-enabled tracing on import.
         set -x
+    else
+        builtin source "$@"
     fi
 }
 ynh_script_progression() { :; }
@@ -80,7 +82,6 @@ builtin source "$PACKAGE/scripts/install"
         token = "audit-defaults-token-secret-9dcf2"
         harness = r'''
 set -e
-source() { :; }
 ynh_app_setting_set_default() { :; }
 ynh_app_setting_set() { :; }
 ynh_string_random() { printf '%s\n' "$TEST_TOKEN"; }
