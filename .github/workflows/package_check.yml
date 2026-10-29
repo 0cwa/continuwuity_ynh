@@ -26,6 +26,7 @@ jobs:
           sudo apt-get install --no-install-recommends --yes incus dnsmasq-base lynx jq btrfs-progs python3-venv
           sudo usermod -aG incus-admin "$USER"
           sudo incus admin init --minimal
+          sudo incus remote add yunohost https://repo.yunohost.org/incus --protocol simplestreams --public
           # Docker on the runner drops forwarded traffic, which breaks container networking.
           sudo iptables -I DOCKER-USER -j ACCEPT || true
           sudo ip6tables -I DOCKER-USER -j ACCEPT || true
