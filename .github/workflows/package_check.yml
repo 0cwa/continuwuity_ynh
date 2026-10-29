@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   package_check:
-    name: Stock package_check (level >= 6)
+    name: Stock package_check
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -49,14 +49,18 @@ jobs:
         working-directory: package_check
         run: |
           sg incus-admin -c "PATH='$GITHUB_WORKSPACE/.venv/bin':\$PATH QT_QPA_PLATFORM=offscreen YNHDEV_BACKEND=incus DIST=bookworm YNH_BRANCH=stable ./package_check.sh '$GITHUB_WORKSPACE/app'"
-      - name: Require level >= 6
+      - name: Require every test to pass and no non-catalog linter errors
+        # Levels 1 and 5 need catalog membership, which comes after submission,
+        # so gate on the underlying tests instead of the computed level.
         run: |
           shopt -s nullglob
           files=(package_check/results_*.json)
           [ ${#files[@]} -gt 0 ] || { echo "No results file produced"; exit 1; }
-          level=$(jq -r '.level' "${files[0]}")
-          echo "package_check level: $level"
-          [ "$level" -ge 6 ]
+          jq -c '{level, level_results}' "${files[0]}"
+          jq -e '.tests != [] and all(.tests[]; .main_result == "success")' "${files[0]}"
+          sed 's/\x1b\[[0-9;]*m//g' package_check/full_log_*.log \
+            | sed -n '/\[Test 1\/.*Package linter/,/^}/p' | sed -n '/^{/,/^}/p' \
+            | jq -e '[.critical[], .error[]] | map(select(startswith("AppCatalog.") | not)) == []'
       - name: Upload results and logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

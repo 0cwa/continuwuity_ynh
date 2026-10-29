@@ -11,7 +11,7 @@ architecture-specific downloads and SHA256 checksums are pinned in
 
 ## Support status
 
-- **Release gate (stock YunoHost package_check, level 6+):** install, upgrade,
+- **Release gate (stock YunoHost package_check, all tests):** install, upgrade,
   backup/restore, remove, multi-instance. See [Testing](doc/TESTING.md) for the
   recorded result.
 - **Community-tested (reports welcome):** Dex/OIDC login, SMTP, federation/TURN,

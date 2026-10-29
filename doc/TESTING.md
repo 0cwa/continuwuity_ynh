@@ -32,9 +32,12 @@ prove a YunoHost installation works.
 ## Release gate
 
 A release requires one thing: YunoHost's stock, unmodified
-[package_check](https://github.com/YunoHost/package_check) passing at
-**level 6 or higher** on **amd64, YunoHost stable**. Run it on a disposable
-Incus/LXD runner, never a production host:
+[package_check](https://github.com/YunoHost/package_check) on **amd64, YunoHost
+stable** with **every test passing** and **no linter critical issues or errors
+other than `AppCatalog.*`**. Catalog checks hold the computed level at 0 until
+the app is accepted into the catalog, so the level itself is not the gate. The
+`package_check` CI workflow runs this on every pull request. To run it by hand,
+use a disposable Incus/LXD runner, never a production host:
 
 ```bash
 git clone https://github.com/YunoHost/package_check.git
@@ -47,8 +50,8 @@ this table:
 
 | Result line |
 | --- |
-| package_check `<commit>`, YunoHost `<version>`, level `<N>`, `<date>` |
-| _(placeholder: not yet run)_ |
+| package_check `<commit>`, YunoHost `<version>`, tests passed, `<date>` |
+| package_check `f7d32ca`, YunoHost 12.1.41.2, 5/5 (linter, install, multi-instance, backup/restore, upgrade), 2026-10-29 |
 
 Real-host behavior that package_check does not cover, such as Dex, SMTP, TURN,
 and arm64 YunoHost, is tracked in [PROD_TEST.md](PROD_TEST.md) and is not part
