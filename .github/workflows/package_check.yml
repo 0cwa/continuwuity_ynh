@@ -1,0 +1,73 @@
+name: YunoHost package_check
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package_check:
+    name: Stock package_check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PACKAGE_CHECK_COMMIT: f7d32cadac3cfced282decede024707fba9e6ec6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: app
+      - name: Install and initialise Incus
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends --yes incus dnsmasq-base lynx jq btrfs-progs python3-venv libcurl4-openssl-dev libssl-dev wkhtmltopdf
+          sudo usermod -aG incus-admin "$USER"
+          sudo incus admin init --minimal
+          sg incus-admin -c "incus remote add yunohost https://repo.yunohost.org/incus --protocol simplestreams --public"
+          # The remote publishes yunohost/<dist>-<branch>/appci, but package_check
+          # looks for yunohost-<dist>-<branch>-appci; it falls back to a local image.
+          sg incus-admin -c "incus image copy yunohost:yunohost/bookworm-stable/appci local: --alias yunohost-bookworm-stable-appci"
+          # Docker on the runner drops forwarded traffic, which breaks container networking.
+          sudo iptables -I DOCKER-USER -j ACCEPT || true
+          sudo ip6tables -I DOCKER-USER -j ACCEPT || true
+      - name: Fetch package_check
+        run: |
+          git clone https://github.com/YunoHost/package_check
+          git -C package_check checkout --detach "$PACKAGE_CHECK_COMMIT"
+          python3 -m venv .venv
+          # package_check's own requirements plus those of the linter it clones.
+          .venv/bin/pip install -r package_check/requirements.txt jsonschema packaging pyparsing six
+          # Hosted runners block ICMP; package_check only pings to test connectivity.
+          printf '#!/bin/sh\nfor host; do :; done\nexec curl -fsS -o /dev/null --max-time 10 "https://$host"\n' > .venv/bin/ping
+          chmod +x .venv/bin/ping
+      - name: Run package_check
+        # sg: the incus-admin group is not active in this shell yet.
+        # package_check exits 0 even when tests fail; the level is checked below.
+        working-directory: package_check
+        run: |
+          sg incus-admin -c "PATH='$GITHUB_WORKSPACE/.venv/bin':\$PATH QT_QPA_PLATFORM=offscreen YNHDEV_BACKEND=incus DIST=bookworm YNH_BRANCH=stable ./package_check.sh '$GITHUB_WORKSPACE/app'"
+      - name: Require every test to pass and no non-catalog linter errors
+        # Levels 1 and 5 need catalog membership, which comes after submission,
+        # so gate on the underlying tests instead of the computed level.
+        run: |
+          shopt -s nullglob
+          files=(package_check/results_*.json)
+          [ ${#files[@]} -gt 0 ] || { echo "No results file produced"; exit 1; }
+          jq -c '{level, level_results}' "${files[0]}"
+          jq -e '.tests != [] and all(.tests[]; .main_result == "success")' "${files[0]}"
+          sed 's/\x1b\[[0-9;]*m//g' package_check/full_log_*.log \
+            | sed -n '/\[Test 1\/.*Package linter/,/^}/p' | sed -n '/^{/,/^}/p' \
+            | jq -e '[.critical[], .error[]] | map(select(startswith("AppCatalog.") | not)) == []'
+      - name: Upload results and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package_check-results
+          path: |
+            package_check/results_*.json
+            package_check/*.log
+            package_check/summary_*.png
+          if-no-files-found: warn

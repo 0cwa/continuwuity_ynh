@@ -4,7 +4,7 @@ packaging_format = 2
 id = "continuwuity"
 name = "Continuwuity"
 description.en = "Community maintained Matrix homeserver with optional YunoHost login through Dex"
-version = "26.9.1~ynh3"
+version = "26.9.1~ynh5"
 maintainers = ["0cwa"]
 
 [upstream]

@@ -36,7 +36,6 @@ source() {
         continuwuity_validate_settings() { :; }
         continuwuity_write_config() { :; }
         continuwuity_permissions() { :; }
-        continuwuity_bootstrap_admin() { :; }
         continuwuity_dex_setup() { :; }
         continuwuity_configure() { :; }
         continuwuity_register_service() { :; }
@@ -44,15 +43,20 @@ source() {
     elif [[ "$1" == "/usr/share/yunohost/helpers" ]]; then
         # Simulate a helper library which has re-enabled tracing on import.
         set -x
+    else
+        builtin source "$@"
     fi
 }
-ynh_script_progression() { :; }
+# Match YunoHost's progression helper, which re-enables xtrace on return.
+ynh_script_progression() { set -x; }
 ynh_die() { printf '%s\n' "$*" >&2; exit 1; }
 ynh_app_setting_set() { :; }
 ynh_app_setting_set_default() { :; }
 ynh_string_random() { printf '%s\n' "$TEST_TOKEN"; }
-ynh_setup_source() { :; }
+ynh_setup_source() { set -x; }
+ynh_exec_as_app() { :; }
 ynh_systemctl() { :; }
+chown() { :; }
 builtin source "$PACKAGE/scripts/install"
 '''
         with tempfile.TemporaryDirectory() as directory:
@@ -62,6 +66,7 @@ builtin source "$PACKAGE/scripts/install"
                     **os.environ,
                     "PACKAGE": str(PACKAGE),
                     "TEST_TOKEN": secret_token,
+                    "YNH_APP_BASEDIR": str(PACKAGE),
                     "app": "continuwuity",
                     "domain": "matrix.example.test",
                     "admin": "alice",
@@ -72,15 +77,18 @@ builtin source "$PACKAGE/scripts/install"
                 capture_output=True,
                 text=True,
             )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn(secret_password, result.stdout + result.stderr)
-        self.assertNotIn(secret_token, result.stdout + result.stderr)
+        trace = result.stdout + result.stderr
+        sanitized_trace = trace.replace(secret_password, "[REDACTED]").replace(
+            secret_token, "[REDACTED]"
+        )
+        self.assertEqual(result.returncode, 0, sanitized_trace)
+        self.assertFalse(secret_password in trace, "Initial password appeared in the install trace.")
+        self.assertFalse(secret_token in trace, "Generated registration token appeared in the install trace.")
 
     def test_secret_defaults_disable_trace_if_a_helper_reenabled_it(self):
         token = "audit-defaults-token-secret-9dcf2"
         harness = r'''
 set -e
-source() { :; }
 ynh_app_setting_set_default() { :; }
 ynh_app_setting_set() { :; }
 ynh_string_random() { printf '%s\n' "$TEST_TOKEN"; }
@@ -96,6 +104,12 @@ continuwuity_defaults
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn(token, result.stdout + result.stderr)
+
+    def test_routine_permissions_never_traverse_media(self):
+        common = (PACKAGE / "scripts/_service.sh").read_text()
+        self.assertNotIn('chown -R "$app:$app" "$data_dir"', common)
+        self.assertIn('chown "$app:$app" "$data_dir"', common)
+
 
 if __name__ == "__main__":
     unittest.main()
