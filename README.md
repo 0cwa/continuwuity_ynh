@@ -9,6 +9,10 @@ Requires **YunoHost 12.1.18 or newer** on **amd64 or arm64**. The packaged relea
 architecture-specific downloads and SHA256 checksums are pinned in
 [manifest.toml](manifest.toml).
 
+This is an independent package under agent-driven development. The repository contains the
+complete installable package, automated checks, and an upstream-binary smoke
+test. See [testing](doc/TESTING.md).
+
 ## Support status
 
 - **Release gate (stock YunoHost package_check, all tests):** install, upgrade,
