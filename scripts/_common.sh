@@ -14,14 +14,18 @@ continuwuity_delegation() {
     if [[ "$server_name" != "$domain" ]]; then
         # The domain is shared with other apps: refuse anything that already
         # serves Matrix discovery (any location form, alias or static file).
-        local conflict
+        # Match the matrix path itself, not e.g. well-known/matrix.example.org/.
+        local conflict pattern="^[^#]*well-known/matrix([/'\"[:space:];{]|\$)"
         conflict="$(grep -rlsE --exclude="$(basename -- "$delegation")" \
-            '^[^#]*well-known/matrix' "/etc/nginx/conf.d/$server_name.d/" | head -n 1)" || true
+            "$pattern" "/etc/nginx/conf.d/$server_name.d/" | head -n 1)" || true
         [[ -z "$conflict" ]] \
             || ynh_die "Matrix discovery is already configured in $conflict. Resolve that conflict before delegating this domain."
-        # YunoHost serves /.well-known/acme-challenge from /var/www/.well-known.
-        [[ ! -e "/var/www/.well-known/matrix" ]] \
-            || ynh_die "A static Matrix discovery path exists at /var/www/.well-known/matrix. Resolve that conflict before delegating this domain."
+        # YunoHost serves per-domain static well-known files from these roots.
+        local static
+        for static in "/var/www/.well-known/matrix" "/var/www/.well-known/$server_name/matrix"; do
+            [[ ! -e "$static" ]] \
+                || ynh_die "A static Matrix discovery path exists at $static. Resolve that conflict before delegating this domain."
+        done
         local previous=""
         if [[ -f "$delegation" ]]; then
             previous="$(mktemp)"

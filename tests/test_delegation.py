@@ -65,6 +65,27 @@ class DelegationTests(unittest.TestCase):
         self.assertIn("static Matrix discovery", result.stderr)
         self.assertFalse(self.delegation.exists())
 
+    def test_per_domain_static_path_is_a_conflict(self):
+        (self.root / "var/www/.well-known/identity.example/matrix").mkdir(parents=True)
+        result = self.run_delegation()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("static Matrix discovery", result.stderr)
+        self.assertFalse(self.delegation.exists())
+
+    def test_domain_named_matrix_is_not_a_conflict(self):
+        # YunoHost aliases mail autoconfig under /var/www/.well-known/<domain>/.
+        (self.vhost / "other.conf").write_text(
+            "location ^~ '/.well-known/autoconfig/mail/' {\n"
+            "    alias /var/www/.well-known/matrix.example/autoconfig/mail/;\n}\n"
+        )
+        result = self.run_delegation()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_quoted_exact_location_is_a_conflict(self):
+        (self.vhost / "other.conf").write_text("location = '/.well-known/matrix' { }\n")
+        result = self.run_delegation()
+        self.assertNotEqual(result.returncode, 0)
+
     def test_nginx_rejection_removes_new_file_without_permission(self):
         result = self.run_delegation(NGINX_FAIL="1")
         self.assertNotEqual(result.returncode, 0)
