@@ -52,6 +52,7 @@ this table:
 | --- |
 | package_check `<commit>`, YunoHost `<version>`, tests passed, `<date>` |
 | package_check `f7d32ca`, YunoHost 12.1.41.2, 5/5 (linter, install, multi-instance, backup/restore, upgrade), 2026-10-29 |
+| Production host, [PROD_TEST.md](PROD_TEST.md) steps 1–8, YunoHost 12.1.41.2 amd64, `47b2db0`: install, login, no password in logs, upgrade, backup, remove/restore, purge with no leftovers, 2026-10-29 |
 
 Real-host behavior that package_check does not cover, such as Dex, SMTP, TURN,
 and arm64 YunoHost, is tracked in [PROD_TEST.md](PROD_TEST.md) and is not part
