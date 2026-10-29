@@ -2,41 +2,12 @@
 
 import json
 from collections import OrderedDict
-from pathlib import Path
 import subprocess
 import tomllib
 import unittest
 
 import toml
-from jinja2 import Environment, StrictUndefined
-
-
-PACKAGE = Path(__file__).resolve().parents[1]
-
-
-def render_config(**overrides):
-    """Use the same Jinja filter semantics as ynh_config_add --jinja."""
-    values = {
-        "app": "continuwuity",
-        "domain": "matrix.example.test",
-        "server_name": "example.test",
-        "install_dir": "/var/www/continuwuity",
-        "data_dir": "/home/yunohost.app/continuwuity",
-        "port": 18008,
-        "admin": "alice",
-        "allow_registration": "false",
-        "allow_federation": "true",
-        "max_upload_size": 50,
-        "log_level": "info",
-        "smtp_enabled": "false",
-        "turn_uris_json": "[]",
-        "turn_ttl": 86400,
-        "rtc_service_url": "",
-    }
-    values.update(overrides)
-    environment = Environment(undefined=StrictUndefined)
-    environment.filters["to_json"] = json.dumps
-    return environment.from_string((PACKAGE / "conf/config.toml").read_text()).render(values)
+from package_helpers import PACKAGE, render_config
 
 
 class PackageTests(unittest.TestCase):
@@ -46,7 +17,7 @@ class PackageTests(unittest.TestCase):
         self.assertTrue(requirement.startswith(">= "))
         self.assertGreaterEqual(
             tuple(map(int, requirement[3:].split("."))), (12, 1, 18),
-            "The to_json filter was not available in the 12.1.17 helper",
+            "Jinja to_json was not available in the 12.1.17 helper",
         )
 
     def test_manifest_architectures_have_pinned_matching_assets(self):
@@ -109,12 +80,6 @@ class PackageTests(unittest.TestCase):
                 with self.subTest(script=script.name):
                     result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_metadata_toml_is_parseable(self):
-        for name in ("manifest.toml", "tests.toml", "config_panel.toml"):
-            with self.subTest(name=name):
-                parsed = tomllib.loads((PACKAGE / name).read_text())
-                self.assertTrue(parsed)
 
     def test_metadata_matches_yunohost_toml_decoder(self):
         # YunoHost 12's read_toml uses python-toml with OrderedDict, rather

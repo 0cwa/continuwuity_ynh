@@ -69,14 +69,18 @@ curl() {
     local issuer="$oidc_discovery_url"
     if [[ -f "$DEX_TEST_ROOT/bad-issuer" ]]; then issuer=https://wrong.example.org; fi
     python3 - "$output" "$issuer" <<'PY'
-import json, sys
+import json, os, sys
+metadata = {
+    "issuer": sys.argv[2],
+    "authorization_endpoint": "https://login.example.org/dex/auth",
+    "token_endpoint": "https://login.example.org/dex/token",
+    "jwks_uri": "https://login.example.org/dex/keys",
+}
+insecure_endpoint = os.environ.get("TEST_INSECURE_ENDPOINT")
+if insecure_endpoint in metadata:
+    metadata[insecure_endpoint] = metadata[insecure_endpoint].replace("https://", "http://", 1)
 with open(sys.argv[1], "w") as target:
-    json.dump({
-        "issuer": sys.argv[2],
-        "authorization_endpoint": "https://login.example.org/dex/auth",
-        "token_endpoint": "https://login.example.org/dex/token",
-        "jwks_uri": "https://login.example.org/dex/keys",
-    }, target)
+    json.dump(metadata, target)
 PY
 }
 source "$DEX_HELPER"
@@ -182,6 +186,21 @@ class DexLifecycleTests(unittest.TestCase):
         self.assertEqual(self.client.read_bytes(), client_before)
         self.assertEqual((self.app / "oidc.toml").read_bytes(), config_before)
         self.assertFalse(list(self.dex.glob(".continuwuity-client.*")))
+
+    def test_http_discovery_endpoints_roll_back_changed_client_and_config(self):
+        self.invoke()
+        client_before = self.client.read_bytes()
+        config_before = (self.app / "oidc.toml").read_bytes()
+        for endpoint in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+            with self.subTest(endpoint=endpoint):
+                self.invoke(
+                    success=False,
+                    TEST_DOMAIN="new-matrix.example.org",
+                    TEST_INSECURE_ENDPOINT=endpoint,
+                )
+                self.assertEqual(self.client.read_bytes(), client_before)
+                self.assertEqual((self.app / "oidc.toml").read_bytes(), config_before)
+                self.assertFalse(list(self.dex.glob(".continuwuity-client.*")))
 
     def test_failed_dex_restart_rolls_back_first_registration(self):
         (self.root / "fail-restart-once").touch()
