@@ -34,15 +34,16 @@ Matrix domain.
 
    Log in with a Matrix client at `https://mx-test.example.org`.
 
-6. **Check the operation log for the admin password.** Replace `<password>` with
-   the password you entered. Find the install operation ID, then run:
+6. **Check the operation log for the admin password.** Find the install
+   operation ID, then type the password at the prompt (keeps it out of shell
+   history):
 
    ```bash
    yunohost log list
-   yunohost log show <id> --full | grep -F '<password>'
+   read -rs pw; yunohost log show <id> --full | grep -cF -- "$pw"; unset pw
    ```
 
-   The grep must print nothing.
+   The count must be `0`.
 
 7. **Exercise upgrade and backup.** Upgrade the app with
    `yunohost app upgrade continuwuity -u <url> --force`, then back up and restore
