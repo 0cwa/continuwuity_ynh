@@ -4,10 +4,9 @@ A YunoHost packaging-v2 application for [Continuwuity](https://continuwuity.org/
 the community maintained Matrix homeserver. This package targets **Continuwuity
 26.9.1**, **YunoHost 12.1.17 or newer**, and **amd64 / arm64**.
 
-This is an independent package under development. The repository contains the
+This is an independent package under agent-driven development. The repository contains the
 complete installable package, automated checks, and an upstream-binary smoke
-test. A full YunoHost VM acceptance run is still required before treating it as
-a production-validated release. See [testing](doc/TESTING.md).
+test. See [testing](doc/TESTING.md).
 
 ## Included integrations
 
