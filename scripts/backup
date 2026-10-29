@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Never trace YunoHost lifecycle secrets.
+# YunoHost executes lifecycle hooks under bash -x; never log app secrets.
 set +x
 
 source ../settings/scripts/_common.sh
 source /usr/share/yunohost/helpers
 source ../settings/scripts/_backup.sh
-# Imported helpers may have re-enabled shell tracing.
+# Re-disable tracing after sourcing YunoHost helpers, which may re-enable it.
 set +x
 
 ynh_print_info "Creating a consistent backup of Continuwuity..."

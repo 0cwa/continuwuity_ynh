@@ -1,43 +1,131 @@
 #!/bin/bash
 
-# Never trace YunoHost lifecycle secrets.
+# YunoHost executes lifecycle hooks under bash -x; never log app secrets.
 set +x
 
 source ../settings/scripts/_common.sh
 source /usr/share/yunohost/helpers
 source ../settings/scripts/_backup.sh
-# Imported helpers may have re-enabled shell tracing.
+# Re-disable tracing after sourcing YunoHost helpers, which may re-enable it.
 set +x
+set -e
 
 ynh_script_progression "Checking the Continuwuity backup..."
 
 continuwuity_validate_data_path
-# Validate before replacing any retained data. ynh_restore deliberately skips
-# missing data for most apps; here that would risk pairing old code with a newer
-# RocksDB schema, or starting a new identity after an incomplete restore.
-[[ -d "${YNH_APP_BACKUP_DIR:?}$data_dir" ]] \
+continuwuity_require_local_media
+# YunoHost's ynh_restore skips absent data; accepting that fallback for a
+# RocksDB homeserver can destroy history or pair old binaries with new data.
+archive_data="${YNH_APP_BACKUP_DIR:?}$data_dir"
+[[ -d "$archive_data" && ! -L "$archive_data" ]] \
     || ynh_die "This archive has no complete Continuwuity data snapshot. Restore a full backup containing the database and media."
+# Reject an empty/partial RocksDB backup before replacing existing history.
+continuwuity_validate_rocksdb_marker "$archive_data" \
+    "The archive lacks a valid RocksDB CURRENT marker. Refusing to replace existing homeserver data."
+continuwuity_validate_media_tree "$archive_data/media" archived
 
+# Check dependencies BEFORE moving any retained data or overwriting binaries.
+# The actual Dex client registration still happens after files are restored.
+if [[ "${auth_type:-password}" == dex ]]; then
+    (
+        set -e
+        _continuwuity_dex_load
+        discovery_metadata="$(mktemp)"
+        trap 'rm -f -- "$discovery_metadata"' EXIT
+        _continuwuity_dex_discovery_check "$discovery_metadata" \
+            || ynh_die "Dex HTTPS discovery is unavailable. Restore Dex and its certificate before attempting Continuwuity restore."
+    )
+fi
+
+# On an existing installation, renaming a large directory on the same
+# filesystem is cheap and non-destructive. YunoHost's normal ynh_restore
+# deletes a target larger than 500 MB before proving the replacement works.
+# Keep the old data until the new daemon passes readiness checks.
+restore_rollback_dir=""
+restore_had_existing_data=0
+restore_service_start_attempted=0
+restore_succeeded=0
+
+continuwuity_restore_cleanup() {
+    local status=$? rollback_failed=0
+    trap - EXIT INT TERM
+    set +e
+    set +x
+    if [[ "$restore_had_existing_data" -eq 1 && "$restore_succeeded" -eq 0 ]]; then
+        ynh_print_warn "Restoration failed; recovering the original database and media."
+        # A readiness/start failure can leave the new daemon running. Never
+        # move or delete its data tree unless systemd confirms it stopped.
+        if [[ "$restore_service_start_attempted" -eq 1 ]] \
+            && ! systemctl stop "$app.service"; then
+            ynh_print_warn "Could not stop $app.service after the failed restore; leaving the original data in its rollback directory."
+            rollback_failed=1
+        fi
+        if [[ "$rollback_failed" -eq 0 && ( -e "$data_dir" || -L "$data_dir" ) ]]; then
+            if [[ -L "$data_dir" ]] || mountpoint --quiet "$data_dir"; then
+                rollback_failed=1
+            else
+                mv -- "$data_dir" "$restore_rollback_dir/failed-data" || rollback_failed=1
+            fi
+        fi
+        if [[ "$rollback_failed" -eq 0 ]]; then
+            mv -- "$restore_rollback_dir/original" "$data_dir" || rollback_failed=1
+        fi
+        if [[ "$rollback_failed" -eq 0 ]]; then
+            ynh_print_warn "Original data recovered at $data_dir. YunoHost may have cleaned up the failed app; restore a verified complete backup to reinstall it."
+        else
+            ynh_print_warn "Automatic data rollback failed. Retained original data is at $restore_rollback_dir/original; do not delete it."
+        fi
+        status=1
+    fi
+    if [[ -n "$restore_rollback_dir" ]]; then
+        if [[ "$restore_succeeded" -eq 1 ]]; then
+            # Delete only after the new data and services are verified healthy.
+            rm -rf -- "$restore_rollback_dir" \
+                || ynh_print_warn "Restore succeeded but old data could not be removed from $restore_rollback_dir."
+        elif [[ "$rollback_failed" -eq 0 ]]; then
+            # The original directory is safely back in place. Failed replacement
+            # bytes are disposable; a failed deletion leaves an explicit warning.
+            rm -rf -- "$restore_rollback_dir/failed-data" \
+                || ynh_print_warn "Review failed restore residue at $restore_rollback_dir."
+            rmdir -- "$restore_rollback_dir" 2>/dev/null \
+                || ynh_print_warn "Review retained restore files at $restore_rollback_dir."
+        fi
+    fi
+    exit "$status"
+}
+trap continuwuity_restore_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Stop the old daemon before moving its data directory: open RocksDB files
+# would otherwise keep writing to the renamed rollback copy.
 if [[ -e "/etc/systemd/system/$app.service" ]]; then
     systemctl stop "$app.service"
 fi
 
+if [[ -d "$data_dir" && -n "$(find "$data_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    mountpoint --quiet "$data_dir" \
+        && ynh_die "Cannot safely replace a mounted data directory. Restore to a local directory instead."
+    restore_rollback_dir="$(mktemp -d -- "$(dirname "$data_dir")/.$app-restore-rollback.XXXXXXXX")"
+    chmod 700 "$restore_rollback_dir"
+    mv -- "$data_dir" "$restore_rollback_dir/original"
+    restore_had_existing_data=1
+fi
+
 ynh_script_progression "Restoring Continuwuity and its complete data snapshot..."
 ynh_restore "$install_dir"
-# The helper replaces the old directory (moving small old directories into
-# appconfbackup); it does not merge migrated RocksDB files into the snapshot.
 ynh_restore "$data_dir"
 
 ynh_script_progression "Restoring YunoHost integrations..."
-# Reconcile an optional Dex client on this host before rendering configuration.
-# A missing configured Dex instance must fail with an actionable message.
 continuwuity_dex_setup
 continuwuity_configure
 continuwuity_permissions
 continuwuity_register_service
 
 ynh_script_progression "Starting Continuwuity..."
+restore_service_start_attempted=1
 ynh_systemctl --service="$app" --action=start
 continuwuity_wait_ready
 
+restore_succeeded=1
 ynh_script_progression "Restoration completed for $app"

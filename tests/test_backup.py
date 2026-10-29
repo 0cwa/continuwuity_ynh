@@ -33,6 +33,41 @@ systemctl() {
         *) return 99 ;;
     esac
 }
+du() {
+    if [[ "${FAIL_DU:-0}" == 1 ]]; then
+        printf '1234\t%s\n' "$data_dir"
+        return 29
+    fi
+    command du "$@"
+}
+df() {
+    if [[ "${FAIL_DF:-0}" == 1 ]]; then
+        printf 'Filesystem 1B-blocks Used Available Capacity Mounted\n'
+        printf 'simulated 200000000 0 200000000 0%% /\n'
+        return 31
+    fi
+    if [[ "${FAIL_CAPACITY:-0}" == 1 ]]; then
+        printf 'Filesystem 1B-blocks Used Available Capacity Mounted\n'
+        printf 'limited 1000 999 1 99%% /\n'
+    else
+        command df "$@"
+    fi
+}
+findmnt() {
+    if [[ "${TEST_MEDIA_MOUNT:-0}" == 1 ]]; then
+        printf '/\n%s\n' "$data_dir/media"
+    elif [[ "${TEST_DATA_MOUNT:-0}" == 1 ]]; then
+        printf '/\n%s\n' "$data_dir"
+    elif [[ "${TEST_NESTED_MOUNT:-0}" == 1 ]]; then
+        printf '/\n%s\n' "$data_dir/rocksdb"
+    else
+        command findmnt "$@"
+    fi
+}
+find() {
+    printf '%s\n' "$*" >> "$FIND_CALLS_FILE"
+    command find "$@"
+}
 ynh_systemctl() {
     local action= service= argument
     for argument in "$@"; do
@@ -46,8 +81,24 @@ ynh_systemctl() {
 cp() {
     printf 'copy:%s\n' "$(cat "$STATE_FILE")" >> "$EVENTS_FILE"
     [[ "$(cat "$STATE_FILE")" == inactive ]] || return 31
+    if [[ "${FAIL_PARTIAL_COPY:-0}" == 1 ]]; then
+        local destination="${@: -1}"
+        mkdir -p -- "$destination/$app"
+        command cp -- "$data_dir/CURRENT" "$destination/$app/CURRENT"
+        return 23
+    fi
     [[ "${FAIL_COPY:-0}" != 1 ]] || return 23
     command cp "$@"
+    if [[ "${INVALID_STAGED_MARKER:-0}" == 1 ]]; then
+        local destination="${@: -1}"
+        rm -f -- "$destination/$app/CURRENT"
+    fi
+}
+mv() {
+    if [[ "${CREATE_SNAPSHOT_BEFORE_MOVE:-0}" == 1 ]]; then
+        mkdir -- "${@: -1}"
+    fi
+    command mv "$@"
 }
 
 trap 'printf "parent-exit\n" >> "$EVENTS_FILE"' EXIT
@@ -71,6 +122,8 @@ class SnapshotTests(unittest.TestCase):
         self.state.write_text("active\n")
         self.events = self.root / "events"
         self.events.touch()
+        self.find_calls = self.root / "find-calls"
+        self.find_calls.touch()
         self.snapshot = self.backup / str(self.data).lstrip("/")
 
     def run_snapshot(self, **overrides):
@@ -82,6 +135,7 @@ class SnapshotTests(unittest.TestCase):
             YNH_APP_BACKUP_DIR=str(self.backup),
             STATE_FILE=str(self.state),
             EVENTS_FILE=str(self.events),
+            FIND_CALLS_FILE=str(self.find_calls),
         )
         env.update(overrides)
         return subprocess.run(
@@ -124,6 +178,36 @@ class SnapshotTests(unittest.TestCase):
         )
         self.assertFalse(self.snapshot.exists())
 
+    def test_partial_copy_is_removed_and_never_published(self):
+        result = self.run_snapshot(FAIL_PARTIAL_COPY="1")
+        self.assertEqual(result.returncode, 23)
+        self.assertEqual(
+            self.event_lines(), ["stop", "copy:inactive", "start", "parent-exit"]
+        )
+        self.assertFalse(self.snapshot.exists())
+        staging_paths = [
+            path
+            for path in self.backup.rglob("*")
+            if path.name.startswith(".continuwuity.snapshot.")
+        ]
+        self.assertEqual(staging_paths, [])
+
+    def test_snapshot_created_after_preflight_is_not_overwritten(self):
+        result = self.run_snapshot(CREATE_SNAPSHOT_BEFORE_MOVE="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("appeared during copying", result.stderr)
+        self.assertEqual(
+            self.event_lines(), ["stop", "copy:inactive", "start", "parent-exit"]
+        )
+        self.assertTrue(self.snapshot.is_dir())
+        self.assertEqual(list(self.snapshot.iterdir()), [])
+        staging_paths = [
+            path
+            for path in self.backup.rglob("*")
+            if path.name.startswith(".continuwuity.snapshot.")
+        ]
+        self.assertEqual(staging_paths, [])
+
     def test_failed_stop_prevents_copy(self):
         result = self.run_snapshot(FAIL_STOP="1")
         self.assertEqual(result.returncode, 17)
@@ -141,6 +225,60 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.snapshot / "CURRENT").is_file())
         self.assertTrue((self.snapshot / "media/example").is_file())
+
+    def test_insufficient_staging_space_fails_before_stopping_database(self):
+        result = self.run_snapshot(FAIL_CAPACITY="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Insufficient free space", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
+
+    def test_mounted_media_is_rejected_before_service_stop(self):
+        result = self.run_snapshot(TEST_MEDIA_MOUNT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Mounted media", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertEqual(self.find_calls.read_text(), "")
+        self.assertFalse(self.snapshot.exists())
+
+    def test_nested_symlinked_media_is_rejected_before_service_stop(self):
+        external_media = self.root / "mounted-media"
+        external_media.mkdir()
+        (self.data / "media" / "remote").symlink_to(
+            external_media, target_is_directory=True
+        )
+
+        result = self.run_snapshot()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Symlinked media", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
+
+    def test_data_root_or_nested_mount_is_rejected_before_service_stop(self):
+        for flag in ("TEST_DATA_MOUNT", "TEST_NESTED_MOUNT"):
+            with self.subTest(flag=flag):
+                # Each subtest starts with a fresh event log.
+                self.events.write_text("")
+                result = self.run_snapshot(**{flag: "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Mounted media", result.stderr)
+                self.assertEqual(self.event_lines(), ["parent-exit"])
+                self.assertFalse(self.snapshot.exists())
+
+    def test_failed_size_probe_with_partial_output_does_not_stop_service(self):
+        result = self.run_snapshot(FAIL_DU="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unable to measure", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
+
+    def test_failed_capacity_probe_with_plausible_output_does_not_stop_service(self):
+        result = self.run_snapshot(FAIL_DF="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unable to check", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
 
     def test_unsafe_data_path_is_rejected_before_stop(self):
         result = self.run_snapshot(data_dir=str(self.root / "source"))
@@ -164,6 +302,48 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.snapshot / "CURRENT").read_text(), "previous snapshot\n")
         self.assertEqual(self.event_lines(), ["parent-exit"])
+
+    def test_invalid_rocksdb_marker_is_rejected_before_stopping_service(self):
+        marker = self.data / "CURRENT"
+        external_marker = self.root / "external-CURRENT"
+        external_marker.write_text("outside data directory\n")
+
+        for mode in ("missing", "empty", "symlink"):
+            with self.subTest(mode=mode):
+                self.events.write_text("")
+                marker.unlink(missing_ok=True)
+                if mode == "empty":
+                    marker.write_text("")
+                elif mode == "symlink":
+                    marker.symlink_to(external_marker)
+
+                result = self.run_snapshot()
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("RocksDB CURRENT marker", result.stderr)
+                self.assertEqual(self.event_lines(), ["parent-exit"])
+                self.assertFalse(self.snapshot.exists())
+
+                marker.unlink(missing_ok=True)
+                marker.write_text("original database\n")
+
+    def test_invalid_rocksdb_marker_in_staged_copy_is_never_published(self):
+        result = self.run_snapshot(INVALID_STAGED_MARKER="1")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "copied data snapshot lacks a valid RocksDB CURRENT marker", result.stderr
+        )
+        self.assertEqual(
+            self.event_lines(), ["stop", "copy:inactive", "start", "parent-exit"]
+        )
+        self.assertFalse(self.snapshot.exists())
+        staging_paths = [
+            path
+            for path in self.backup.rglob("*")
+            if path.name.startswith(".continuwuity.snapshot.")
+        ]
+        self.assertEqual(staging_paths, [])
 
 
 if __name__ == "__main__":
