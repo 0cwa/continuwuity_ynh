@@ -158,7 +158,9 @@ continuwuity_snapshot_data() (
         "The copied data snapshot lacks a valid RocksDB CURRENT marker; refusing an incomplete backup."
     # Publish the complete directory with one same-filesystem rename. The
     # archive core consumes only the canonical path after this script exits.
-    mv --no-clobber --no-target-directory -- "$staged_data" "$snapshot"
+    # Whether mv -n fails when it skips varies across coreutils versions; the
+    # check below decides either way.
+    mv --no-clobber --no-target-directory -- "$staged_data" "$snapshot" || true
     [[ ! -e "$staged_data" && -d "$snapshot" && ! -L "$snapshot" ]] \
         || ynh_die "A data snapshot appeared during copying; refusing to overwrite $snapshot."
     # The backup core automatically includes files created in its workspace.

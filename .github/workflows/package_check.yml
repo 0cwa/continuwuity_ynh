@@ -23,7 +23,7 @@ jobs:
       - name: Install and initialise Incus
         run: |
           sudo apt-get update -qq
-          sudo apt-get install --no-install-recommends --yes incus lynx jq btrfs-progs python3-venv
+          sudo apt-get install --no-install-recommends --yes incus dnsmasq-base lynx jq btrfs-progs python3-venv
           sudo usermod -aG incus-admin "$USER"
           sudo incus admin init --minimal
           # Docker on the runner drops forwarded traffic, which breaks container networking.
