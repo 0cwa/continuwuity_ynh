@@ -41,6 +41,14 @@ _continuwuity_dex_load() {
     [[ "${DEX_BROKEN:-0}" != 1 ]] || ynh_die "Dex is not available."
 }
 _continuwuity_dex_discovery_check() { printf '{}\n' > "$1"; }
+df() {
+    if [[ "${FAIL_CAPACITY:-0}" == 1 ]]; then
+        printf 'Filesystem 1B-blocks Used Available Capacity Mounted\n'
+        printf 'limited 1000 999 1 99%% /\n'
+    else
+        command df "$@"
+    fi
+}
 find() {
     if [[ "${FAIL_ARCHIVE_FIND:-0}" == 1 \
         && "$1" == "$YNH_APP_BACKUP_DIR$data_dir/media" ]]; then
@@ -180,6 +188,13 @@ class RestoreTransactionTests(unittest.TestCase):
             "original database\n",
         )
         self.assertEqual((self.data / "CURRENT").read_text(), "restored database\n")
+
+    def test_insufficient_space_for_both_copies_is_rejected_before_touching_data(self):
+        result = self.invoke(FAIL_CAPACITY="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Insufficient free space", result.stderr)
+        self.assert_original_data()
+        self.assertFalse((self.root / "systemctl.log").exists())
 
     def test_bad_dex_is_rejected_before_touching_existing_data(self):
         result = self.invoke(auth_type="dex", DEX_BROKEN="1")

@@ -67,19 +67,32 @@ continuwuity_require_local_media() {
 continuwuity_check_snapshot_space() {
     # Preflight before stopping the database. This is a minimum staging
     # requirement, not a promise about the later compressed YunoHost archive.
+    _continuwuity_check_space "$data_dir" "$YNH_APP_BACKUP_DIR" \
+        "a complete stopped-data snapshot" \
+        "backup staging filesystem. The final YunoHost archive needs additional space"
+}
+
+continuwuity_check_restore_space() {
+    # The original data is only renamed (not freed) until the restore succeeds.
+    _continuwuity_check_space "$1" "$(dirname -- "$data_dir")" \
+        "keeping the original data while restoring" \
+        "data filesystem"
+}
+
+_continuwuity_check_space() {
     local bytes free reserve usage capacity
     # Parsing a pipeline masks du/df errors if awk succeeds after partial output.
-    usage="$(du --summarize --block-size=1 -- "$data_dir")" \
-        || ynh_die "Unable to measure database and media; refusing incomplete backup."
+    usage="$(du --summarize --block-size=1 -- "$1")" \
+        || ynh_die "Unable to measure database and media; refusing incomplete operation."
     bytes="${usage%%[[:space:]]*}"
-    capacity="$(df --portability --block-size=1 -- "$YNH_APP_BACKUP_DIR")" \
-        || ynh_die "Unable to check backup staging free space."
+    capacity="$(df --portability --block-size=1 -- "$2")" \
+        || ynh_die "Unable to check free space."
     free="$(awk 'END {print $4}' <<< "$capacity")"
     [[ "$bytes" =~ ^[0-9]+$ && "$free" =~ ^[0-9]+$ ]] \
-        || ynh_die "Invalid backup staging capacity information."
+        || ynh_die "Invalid capacity information."
     reserve=$((bytes / 10 + 67108864)) # 10% headroom plus 64 MiB.
     if (( free < bytes + reserve )); then
-        ynh_die "Insufficient free space for a complete stopped-data snapshot: need at least $((bytes + reserve)) bytes in the backup staging filesystem, available $free bytes. The final YunoHost archive needs additional space."
+        ynh_die "Insufficient free space for $3: need at least $((bytes + reserve)) bytes in the $4, available $free bytes."
     fi
 }
 

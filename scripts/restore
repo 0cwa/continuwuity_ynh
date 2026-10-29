@@ -23,6 +23,8 @@ archive_data="${YNH_APP_BACKUP_DIR:?}$data_dir"
 continuwuity_validate_rocksdb_marker "$archive_data" \
     "The archive lacks a valid RocksDB CURRENT marker. Refusing to replace existing homeserver data."
 continuwuity_validate_media_tree "$archive_data/media" archived
+# Old data is kept until the restore is verified, so both copies must fit.
+continuwuity_check_restore_space "$archive_data"
 
 # Check dependencies BEFORE moving any retained data or overwriting binaries.
 # The actual Dex client registration still happens after files are restored.
