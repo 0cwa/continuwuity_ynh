@@ -289,8 +289,12 @@ not the active configuration after regeneration.
 
 Normal removal deletes the service, its web configuration, its owned Dex client,
 and managed installation resources. It keeps database and media unless you
-explicitly request YunoHost's purge option. A new installation refuses to reuse
-retained data automatically. Restore that identity from its backup instead.
+explicitly request YunoHost's purge option. A new installation never reuses
+retained data: a non-empty data directory is moved intact to
+`<data_dir>.preinstall-<timestamp>` (with a warning) and the homeserver starts
+empty with a new signing key. To recover the old identity, restore its YunoHost
+backup, or remove the new app, stop the service and swap the directories back.
+Delete the moved directory yourself once it is no longer needed.
 
 This package does not automatically import another Matrix homeserver. Upstream
 documents compatibility with Conduwuit data, but that is a migration requiring

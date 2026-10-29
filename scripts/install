@@ -19,10 +19,8 @@ continuwuity_defaults
 continuwuity_validate_settings
 
 # A normal removal retains data. Never silently pair a new identity, password or
-# administrator with an old database; use a YunoHost restore for existing data.
-if [[ -n "$(find "$data_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-    ynh_die "Retained data exists in $data_dir. Restore its backup, or explicitly move/remove that data before making a new homeserver."
-fi
+# administrator with an old database: move it aside and start clean.
+continuwuity_retire_retained_data
 
 ynh_script_progression "Installing the verified upstream binary..."
 ynh_setup_source --dest_dir="$install_dir"

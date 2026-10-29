@@ -63,3 +63,21 @@ continuwuity_bootstrap_admin() (
         ynh_die "Offline administrator creation failed. No public server was started. Check the selected username and package configuration."
     fi
 )
+
+# A removal without --purge retains the data directory, which is what stock
+# package_check expects to reinstall over. Never adopt or delete that data:
+# a fresh install has a new identity and signing key, so move it aside intact.
+continuwuity_retire_retained_data() {
+    [[ -d "$data_dir" && ! -L "$data_dir" ]] || return 0
+    [[ -n "$(find "$data_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || return 0
+
+    local retired
+    retired="${data_dir}.preinstall-$(date +%Y%m%d%H%M%S)"
+    [[ ! -e "$retired" ]] || retired="${retired}-$$"
+    mv -- "$data_dir" "$retired" \
+        || ynh_die "Could not move retained data in $data_dir aside; leaving it untouched."
+    mkdir -- "$data_dir"
+    chown --reference="$retired" -- "$data_dir"
+    chmod --reference="$retired" -- "$data_dir"
+    ynh_print_warn "Retained data from a previous installation was found and moved to $retired. The new homeserver starts empty. To recover the old one, restore its YunoHost backup, or remove this app, stop the service and swap the two directories back."
+}
