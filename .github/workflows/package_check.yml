@@ -35,6 +35,9 @@ jobs:
           git -C package_check checkout --detach "$PACKAGE_CHECK_COMMIT"
           python3 -m venv .venv
           .venv/bin/pip install toml packaging jsonschema
+          # Hosted runners block ICMP; package_check only pings to test connectivity.
+          printf '#!/bin/sh\nfor host; do :; done\nexec curl -fsS -o /dev/null --max-time 10 "https://$host"\n' > .venv/bin/ping
+          chmod +x .venv/bin/ping
       - name: Run package_check
         # sg: the incus-admin group is not active in this shell yet.
         # package_check exits 0 even when tests fail; the level is checked below.
