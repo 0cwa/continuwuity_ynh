@@ -43,7 +43,7 @@ ynh_app_setting_set() {
     done
     printf '%s' "$selected_value" > "$DEX_TEST_ROOT/settings/$selected_app/$selected_key"
 }
-chown() { :; }
+chown() { [[ -z "${TEST_FAIL_CHOWN:-}" || "$1" != dex:dex ]]; }
 install() {
     local -a install_arguments=()
     local argument
@@ -201,6 +201,11 @@ class DexLifecycleTests(unittest.TestCase):
                 self.assertEqual(self.client.read_bytes(), client_before)
                 self.assertEqual((self.app / "oidc.toml").read_bytes(), config_before)
                 self.assertFalse(list(self.dex.glob(".continuwuity-client.*")))
+
+    def test_unexpected_failure_leaves_no_staging_directory(self):
+        self.invoke(success=False, TEST_FAIL_CHOWN="1")
+        self.assertFalse(list(self.dex.glob(".continuwuity-client.*")))
+        self.assertFalse(self.client.exists())
 
     def test_failed_dex_restart_rolls_back_first_registration(self):
         (self.root / "fail-restart-once").touch()

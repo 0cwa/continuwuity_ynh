@@ -99,8 +99,17 @@ continuwuity_dex_setup() {
     _continuwuity_dex_write_secret
     ynh_app_setting_set --app="$app" --key=oidc_client_id --value="$oidc_client_id"
     ynh_app_setting_set --app="$app" --key=oidc_discovery_url --value="$oidc_discovery_url"
+    _continuwuity_dex_apply
+}
 
-    local dex_workdir dex_had_client=false dex_changed=false
+_continuwuity_dex_apply() (
+    # This subshell has its own EXIT trap, so staging files are removed on every
+    # exit path and the parent's lifecycle traps stay untouched.
+    set -eu
+    local dex_workdir="" dex_oidc_tmp="" dex_had_client=false dex_changed=false
+    trap 'rm -rf -- "$dex_workdir" "$dex_oidc_tmp"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     # Stage next to (not inside) the watched directory, on the same filesystem.
     dex_workdir=$(mktemp -d "$dex_install_dir/.continuwuity-client.XXXXXXXX")
     if [[ -f "$dex_client_file" ]]; then
@@ -145,11 +154,9 @@ PY
             fi
             systemctl restart "$dex_app.service" || true
         fi
-        rm -rf "$dex_workdir"
         ynh_die "Dex did not pass startup and HTTPS OIDC discovery checks. Its previous client fragment was restored. Check Dex's certificate, DNS, service, and issuer before retrying."
     fi
 
-    local dex_oidc_tmp
     dex_oidc_tmp=$(mktemp "$install_dir/.oidc.XXXXXXXX")
     python3 - "$dex_oidc_tmp" "$oidc_discovery_url" \
         "$oidc_client_id" "$install_dir/oidc-client-secret" <<'PY'
@@ -176,8 +183,7 @@ PY
     chown root:"$app" "$dex_oidc_tmp"
     chmod 640 "$dex_oidc_tmp"
     mv -f "$dex_oidc_tmp" "$install_dir/oidc.toml"
-    rm -rf "$dex_workdir"
-}
+)
 
 continuwuity_dex_remove() {
     [[ "${auth_type:-password}" == dex && "${dex_app:-}" =~ ^dex(__[0-9]+)?$ ]] || return 0
