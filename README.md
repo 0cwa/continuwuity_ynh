@@ -9,9 +9,12 @@ Requires **YunoHost 12.1.18 or newer** on **amd64 or arm64**. The packaged relea
 architecture-specific downloads and SHA256 checksums are pinned in
 [manifest.toml](manifest.toml).
 
-**This is an independent package under development, not a production-validated
-release.** Automated checks do not replace the
-[required YunoHost acceptance run](doc/TESTING.md#required-yunohost-acceptance-run).
+## Support status
+
+- **Tested by CI/package_check:** install, upgrade, backup/restore, remove,
+  multi-instance.
+- **Community-tested (reports welcome):** Dex/OIDC login, SMTP, federation/TURN,
+  arm64 YunoHost, very large media stores, offsite Restic/Storj backup.
 
 ## Install
 
@@ -20,12 +23,10 @@ as `@alice:example.org`, enter `example.org` as the **permanent Matrix identity
 domain**. Leaving that field empty uses the web domain for Matrix IDs instead.
 
 The web domain is reserved in full; subpath installation is unsupported. A
-separate identity domain keeps its website or portal and gains only Matrix
-`/.well-known/` discovery routes. Both domains must already exist on this
-YunoHost server with working DNS and trusted HTTPS certificates, and the
-identity domain's Matrix discovery paths must be available. Keep control of the
-identity domain permanently: Matrix IDs cannot be renamed by changing the API
-address. See the [installation notes](doc/PRE_INSTALL.md) and
+separate identity domain keeps its website and gains only Matrix `/.well-known/`
+routes. Both domains need working DNS and trusted HTTPS on this server. Keep
+control of the identity domain permanently: Matrix IDs cannot be renamed by
+changing the API address. See the [installation notes](doc/PRE_INSTALL.md) and
 [domain guide](doc/ADMIN.md#federation-delegation-and-domain-changes).
 
 ```bash
@@ -62,20 +63,18 @@ backups. Optional settings cover Dex, verified authenticated SMTP, an existing
 TURN server, and a MatrixRTC LiveKit authorization service. It does not deploy
 the separate calling services.
 
-Backups stop the homeserver while copying **both database and media**; provision
-space for the snapshot and archive. Preflight checks staging free space before
-stopping the service; large backups can cause downtime on non-reflink filesystems.
-Mounted app data and symlinked media are unsupported and rejected by backup and
-restore. Upgrade safety backups include complete data even when
-`BACKUP_CORE_ONLY` or `do_not_backup_data` is set. Normal uninstall retains data,
-and reinstall refuses to overwrite it. Restore a backup to recover that identity;
-YunoHost's explicit purge option removes retained data.
+Backups stop the homeserver while copying **both database and media**, so provision
+free space for the snapshot and archive; large backups cause downtime on
+non-reflink filesystems. Mounted app data and symlinked media are unsupported.
+Upgrade safety backups always include complete data. Normal uninstall retains
+data, and reinstall refuses to overwrite it; YunoHost's purge option removes it.
 
 | Documentation | Contents |
 | --- | --- |
 | [Administrator guide](doc/ADMIN.md) | Configuration, accounts, email, calls, backups, upgrades and recovery |
 | [Dex / OpenID guide](doc/DEX.md) | Client registration, account linking, access restrictions and migration |
-| [Testing and acceptance](doc/TESTING.md) | Automated coverage, its limits and real-host release requirements |
+| [Testing](doc/TESTING.md) | Automated checks and the release gate |
+| [Production testing](doc/PROD_TEST.md) | Trying the package on a production YunoHost server safely |
 | [Encrypted offsite backups and external storage](doc/STORAGE.md) | Current support boundary and Storj/Restic recovery plan |
 | [Contributing](CONTRIBUTING.md) | Repository layout, local validation and release maintenance |
 

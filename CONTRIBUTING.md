@@ -2,9 +2,8 @@
 
 This repository contains the YunoHost package, not the upstream homeserver.
 Start with [README.md](README.md) for installation and
-[doc/TESTING.md](doc/TESTING.md) for acceptance requirements. Track proposed work
-and review history in issues and pull requests; the documentation describes
-package behavior and repeatable maintenance procedures.
+[doc/TESTING.md](doc/TESTING.md) for checks and the release gate. Track proposed
+work and review history in issues and pull requests.
 
 ## Repository layout
 
@@ -52,6 +51,7 @@ logs can contain test credentials, so treat `--keep-directory` output as private
 
 The same checks run in [.github/workflows/package.yml](.github/workflows/package.yml).
 Prefer regressions that verify behavior, failure recovery or security boundaries.
+Add failure-injection and edge-case hardening only in response to a reported problem.
 Keep fixture support separate from discoverable test modules so standalone
 validation scripts do not import a test suite.
 
@@ -63,6 +63,6 @@ and update the manifest URLs, hashes and version together. Do not substitute
 CPU-specific maxperf builds or assume future releases keep the same asset names.
 
 Review configuration and database migration implications, rerun the automated
-checks, and complete the YunoHost upgrade/rollback acceptance scenarios before
-publishing. Preserve full database-and-media safety backups while upstream uses
-RocksDB migrations. CI results alone are not evidence of real-host acceptance.
+checks, and pass the release gate in [doc/TESTING.md](doc/TESTING.md) before
+publishing. Keep full database-and-media safety backups while upstream uses
+RocksDB migrations.
