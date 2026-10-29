@@ -23,7 +23,7 @@ jobs:
       - name: Install and initialise Incus
         run: |
           sudo apt-get update -qq
-          sudo apt-get install --no-install-recommends --yes incus dnsmasq-base lynx jq btrfs-progs python3-venv
+          sudo apt-get install --no-install-recommends --yes incus dnsmasq-base lynx jq btrfs-progs python3-venv libcurl4-openssl-dev libssl-dev wkhtmltopdf
           sudo usermod -aG incus-admin "$USER"
           sudo incus admin init --minimal
           sg incus-admin -c "incus remote add yunohost https://repo.yunohost.org/incus --protocol simplestreams --public"
@@ -38,7 +38,8 @@ jobs:
           git clone https://github.com/YunoHost/package_check
           git -C package_check checkout --detach "$PACKAGE_CHECK_COMMIT"
           python3 -m venv .venv
-          .venv/bin/pip install toml packaging jsonschema
+          # package_check's own requirements plus those of the linter it clones.
+          .venv/bin/pip install -r package_check/requirements.txt jsonschema packaging pyparsing six
           # Hosted runners block ICMP; package_check only pings to test connectivity.
           printf '#!/bin/sh\nfor host; do :; done\nexec curl -fsS -o /dev/null --max-time 10 "https://$host"\n' > .venv/bin/ping
           chmod +x .venv/bin/ping
@@ -47,7 +48,7 @@ jobs:
         # package_check exits 0 even when tests fail; the level is checked below.
         working-directory: package_check
         run: |
-          sg incus-admin -c "PATH='$GITHUB_WORKSPACE/.venv/bin':\$PATH YNHDEV_BACKEND=incus DIST=bookworm YNH_BRANCH=stable ./package_check.sh '$GITHUB_WORKSPACE/app'"
+          sg incus-admin -c "PATH='$GITHUB_WORKSPACE/.venv/bin':\$PATH QT_QPA_PLATFORM=offscreen YNHDEV_BACKEND=incus DIST=bookworm YNH_BRANCH=stable ./package_check.sh '$GITHUB_WORKSPACE/app'"
       - name: Require level >= 6
         run: |
           shopt -s nullglob
