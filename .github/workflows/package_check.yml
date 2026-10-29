@@ -27,6 +27,9 @@ jobs:
           sudo usermod -aG incus-admin "$USER"
           sudo incus admin init --minimal
           sg incus-admin -c "incus remote add yunohost https://repo.yunohost.org/incus --protocol simplestreams --public"
+          # The remote publishes yunohost/<dist>-<branch>/appci, but package_check
+          # looks for yunohost-<dist>-<branch>-appci; it falls back to a local image.
+          sg incus-admin -c "incus image copy yunohost:yunohost/bookworm-stable/appci local: --alias yunohost-bookworm-stable-appci"
           # Docker on the runner drops forwarded traffic, which breaks container networking.
           sudo iptables -I DOCKER-USER -j ACCEPT || true
           sudo ip6tables -I DOCKER-USER -j ACCEPT || true
