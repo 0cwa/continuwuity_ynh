@@ -255,12 +255,14 @@ upgrades/settings changes no longer recursively change ownership of every
 database and media file.
 
 All data is included even for automatic upgrade backups and when
-`BACKUP_CORE_ONLY` or `do_not_backup_data` would normally omit data. Restoring
-old code against a newly migrated RocksDB database is unsafe. The restore script
-rejects archives without a complete data snapshot, and replaces retained data
-rather than merging incompatible database files. Before changing retained data,
-the restore now preflights Dex (when enabled) and moves any nonempty original
-data directory into a root-only rollback directory on the same filesystem.
+`BACKUP_CORE_ONLY` or `do_not_backup_data` would normally omit data. These
+YunoHost options do not disable Continuwuity's complete database-and-media
+safety copy. Restoring old code against a newly migrated RocksDB database is
+unsafe. The restore script rejects archives without a complete data snapshot
+and replaces retained data rather than merging incompatible database files.
+Before changing retained data, the restore now preflights Dex (when enabled) and
+moves any nonempty original data directory into a root-only rollback directory
+on the same filesystem.
 If the new data/service fails to restore, the original database and media are
 moved back, but YunoHost may still remove the failed application: you must
 recover the app itself from a verified complete archive. The temporary original

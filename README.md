@@ -68,11 +68,18 @@ backups. Optional settings cover Dex, verified authenticated SMTP, an existing
 TURN server, and a MatrixRTC LiveKit authorization service. It does not deploy
 the separate calling services.
 
-Backups stop the homeserver while copying **both database and media**, so provision
-free space for the snapshot and archive; large backups cause downtime on
-non-reflink filesystems. Mounted app data and symlinked media are unsupported.
-Upgrade safety backups always include complete data. Normal uninstall retains
-data, and reinstall refuses to overwrite it; YunoHost's purge option removes it.
+Backups, including automatic upgrade safety backups, contain the **full database
+and media**. YunoHost options such as `BACKUP_CORE_ONLY` or
+`do_not_backup_data` do not exclude this package's safety copy. Before an
+upgrade, allow staging space of at least 110% of the data directory's allocated
+size plus 64 MiB, with additional space for the final YunoHost archive. The
+service is stopped while the snapshot is copied; on non-reflink filesystems this
+means copying the full data set. On small or slow hosts, a large snapshot and
+archive can take time and compete with the homeserver for disk I/O, so schedule
+backups and upgrades for a quiet period. Mounted app data and symlinked media
+are unsupported.
+Normal uninstall retains data, and reinstall refuses to overwrite it;
+YunoHost's purge option removes it.
 
 | Documentation | Contents |
 | --- | --- |
