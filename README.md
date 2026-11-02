@@ -70,11 +70,11 @@ the separate calling services.
 
 Backups, including automatic upgrade safety backups, contain the **full database
 and media**. YunoHost options such as `BACKUP_CORE_ONLY` or
-`do_not_backup_data` do not exclude this package's safety copy. Before an
-upgrade, allow staging space of at least 110% of the data directory's allocated
-size plus 64 MiB, with additional space for the final YunoHost archive. The
-service is stopped while the snapshot is copied; on non-reflink filesystems this
-means copying the full data set. On small or slow hosts, a large snapshot and
+`do_not_backup_data` do not exclude this package's safety copy. Before a
+backup or upgrade, allow staging space of at least 110% of the data directory's
+allocated size plus 64 MiB, with additional space for the final YunoHost
+archive. The service is stopped while the snapshot is copied; on non-reflink
+filesystems this means copying the full data set. On small or slow hosts, a large snapshot and
 archive can take time and compete with the homeserver for disk I/O, so schedule
 backups and upgrades for a quiet period. Mounted app data and symlinked media
 are unsupported.
