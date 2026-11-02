@@ -11,8 +11,9 @@ would not be a safe rollback point.
 Plan for at least 110% of the data directory's allocated size plus 64 MiB of
 free space where the backup snapshot is staged, and additional room for the
 final YunoHost archive. The service is stopped while the complete database and
-media snapshot is copied, then can run again while YunoHost creates the archive
-and the upgrade proceeds. Reflinks can make the snapshot much faster and cheaper
+media snapshot is copied. If the service was running, the backup script restarts
+it after copying the snapshot, before YunoHost creates the archive. The upgrade
+may stop it again. Reflinks can make the snapshot much faster and cheaper
 when the filesystem supports them; otherwise a full copy is made. On a small or
 slow host, copying and archiving a large media store can take a while and
 compete with the homeserver for disk I/O. Schedule upgrades during a quiet
