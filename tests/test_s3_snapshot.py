@@ -36,6 +36,8 @@ class FakeRclone:
         self.objects = {}
         self.calls = []
         self.copy_mode = "normal"
+        self.copy_stderr = ""
+        self.copy_returncode = 0
         self.omit_hashes = False
         self.marker_race = False
         self.oversized_cat = False
@@ -119,8 +121,11 @@ class FakeRclone:
                 if path not in existing and not (self.copy_mode == "partial" and path == "two.bin"):
                     existing[path] = contents
                     reason = "Copied (new)" if self.copy_mode == "fallback" else "Copied (server-side copy)"
-                    log_lines.append(f"INFO : {path}: {reason}\n")
-            return FakeProcess(command, stderr="".join(log_lines), text=False, stdout_mode=stdout, stderr_mode=stderr)
+                    log_lines.append(f"2026/11/16 20:59:46 INFO  : {path}: {reason}\n")
+            process = FakeProcess(command, stderr="".join(log_lines) + self.copy_stderr,
+                                  text=False, stdout_mode=stdout, stderr_mode=stderr)
+            process.returncode = self.copy_returncode
+            return process
         if args[0] == "lsjson":
             remote = args[-1]
             rows = [{"Path": path, "Size": len(contents)}
@@ -258,6 +263,72 @@ class S3SnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(s3_snapshot.SnapshotError, "did not server-side-copy"):
             s3_snapshot.create(self.manifest, self.env)
         self.assertFalse(self.manifest.exists())
+
+    def test_copy_failure_summary_never_exposes_or_interprets_raw_stderr(self):
+        credential = "private-key-StatusCode: 403-api error AccessDenied:"
+        self.fake.copy_stderr = (
+            "2026/11/16 20:59:46 ERROR : one.bin: Failed to copy: "
+            "original key path status=403 code=AccessDenied; "
+            f"https://bucket.example.test/private-bucket/private-object credential={credential} "
+            "response StatusCode: 502 RequestID: request-id-secret\n"
+        )
+        self.fake.copy_returncode = 1
+        with self.assertRaises(s3_snapshot.SnapshotError) as raised:
+            s3_snapshot.create(
+                self.manifest,
+                settings(media_s3_secret_access_key=credential),
+            )
+        message = str(raised.exception)
+        self.assertIn("rclone copy operation failed", message)
+        self.assertIn("server-side copies 2/2", message)
+        self.assertIn("1 error lines", message)
+        for sensitive_or_untrusted in (
+            "private-key", "403", "AccessDenied", "502", "bucket.example.test", "private-bucket",
+            "private-object", "request-id-secret", "original key path",
+        ):
+            self.assertNotIn(sensitive_or_untrusted, message)
+        self.assertFalse(self.manifest.exists())
+
+    def test_hostile_echoed_path_is_never_returned_in_copy_summary(self):
+        malicious_path = "nested/status=403/code=AccessDenied"
+        self.fake.objects[self.live][malicious_path] = b"path fixture"
+        self.fake.copy_stderr = (
+            f"2026/11/16 20:59:46 ERROR : {malicious_path}: "
+            f"Failed to copy: echoed key {malicious_path}; StatusCode: 403\n"
+        )
+        self.fake.copy_returncode = 1
+        with self.assertRaises(s3_snapshot.SnapshotError) as raised:
+            s3_snapshot.create(self.manifest, self.env)
+        message = str(raised.exception)
+        self.assertIn("server-side copies 3/3", message)
+        self.assertIn("1 error lines", message)
+        self.assertNotIn(malicious_path, message)
+        self.assertNotIn("403", message)
+        self.assertNotIn("AccessDenied", message)
+        self.assertFalse(self.manifest.exists())
+
+    def test_real_rclone_copy_result_line_shape_is_recognized(self):
+        severity, path, result = s3_snapshot._rclone_copy_result_parts(
+            "2026/11/16 20:59:46 INFO  : sample.txt: Copied (new)", {"sample.txt"}
+        )
+        self.assertEqual((severity, path, result), ("INFO", "sample.txt", "Copied (new)"))
+        severity, path, result = s3_snapshot._rclone_copy_result_parts(
+            "2026/11/16 20:59:46 INFO  : sample.txt: Copied (server-side copy)", {"sample.txt"}
+        )
+        self.assertEqual((severity, path, result), ("INFO", "sample.txt", "Copied (server-side copy)"))
+
+    def test_server_copy_text_in_object_name_cannot_count_fallback(self):
+        malicious_path = "Copied (server-side copy).bin"
+        self.fake.objects[self.live][malicious_path] = b"fallback object"
+        self.fake.copy_mode = "fallback"
+        with self.assertRaisesRegex(s3_snapshot.SnapshotError, r"server-side copies 0/3"):
+            s3_snapshot.create(self.manifest, self.env)
+        self.assertFalse(self.manifest.exists())
+
+    def test_duplicate_server_copy_result_counts_object_once(self):
+        self.fake.copy_stderr = "2026/11/16 20:59:46 INFO  : one.bin: Copied (server-side copy)\n"
+        generation = s3_snapshot.create(self.manifest, self.env)
+        self.assertEqual(json.loads(self.manifest.read_text())["generation"], generation)
 
     def test_empty_source_is_a_valid_generation_and_empty_restore(self):
         self.fake.objects[self.live] = {}

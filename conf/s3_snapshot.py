@@ -19,11 +19,13 @@ once each; verify reads snapshot media once; restore reads snapshot and restored
 media once each (in addition to a read-only verify preflight if the caller ran
 one). This trades bandwidth and provider egress for content-level proof. Hash
 streams use four bounded transfers and digest lines are consumed one at a time;
-stderr is sent to DEVNULL so it cannot block the stdout reader. Only inventory
-metadata is retained in memory, not media payloads. Copy requests server-side
-copying across the two equivalent rclone configurations; it checks rclone's
-per-object result lines and refuses to publish a manifest if any object fell
-back to client-side transfer.
+hash stderr is sent to DEVNULL so it cannot block the stdout reader. Copy stderr
+is consumed one line at a time and reduced to safe result/error counts; raw
+provider errors are never emitted. Only inventory metadata is retained in
+memory, not media payloads. Copy requests server-side copying across the two
+equivalent rclone configurations; it checks rclone's per-object result lines
+and refuses to publish a manifest if any object fell back to client-side
+transfer.
 The local manifest is the commit marker and belongs in the same protected
 backup archive. Failed copies leave partial generation prefixes as safe
 orphans; the helper never deletes them. Rclone transfers/checkers are bounded
@@ -76,6 +78,11 @@ RCLONE_OPERATION_TIMEOUT_SECONDS = 24 * 60 * 60
 RCLONE_TERMINATE_GRACE_SECONDS = 3
 MAX_RCLONE_LINE_BYTES = 64 * 1024
 RCLONE_NETWORK_FLAGS = ["--contimeout", "1m", "--timeout", "5m", "--retries", "3"]
+RCLONE_COPY_LOG_PREFIX = re.compile(
+    r"^(?:(?:\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s+)?(INFO|ERROR)\s*:\s*",
+    re.IGNORECASE,
+)
+RCLONE_SERVER_COPY_RESULT = re.compile(r"Copied \(server-side copy\)\s*")
 
 
 def _required(env: dict[str, str], name: str) -> str:
@@ -201,6 +208,30 @@ def _rclone_stage(args: tuple[str, ...] | list[str]) -> str:
 def _stage_notice(stage: str, state: str) -> None:
     # Never include remote names, paths, credentials, or raw rclone arguments.
     print(f"S3 snapshot: {stage} {state}.", file=sys.stderr, flush=True)
+
+
+def _rclone_copy_result_parts(line: str, expected_paths: set[str]) -> tuple[str | None, str | None, str | None]:
+    """Return severity, known object path and result suffix, if unambiguous."""
+    match = RCLONE_COPY_LOG_PREFIX.match(line)
+    if not match:
+        return None, None, None
+    start = match.end()
+    delimiters: list[int] = []
+    cursor = start
+    while True:
+        cursor = line.find(": ", cursor)
+        if cursor < 0:
+            break
+        if line[start:cursor] in expected_paths:
+            delimiters.append(cursor + 2)
+        cursor += 2
+    # A path may itself contain the delimiter. If it can be interpreted as
+    # more than one known object name, suppress the result rather than guess.
+    if len(delimiters) != 1:
+        return match.group(1).upper(), None, None
+    delimiter = delimiters[0] - 2
+    path = line[start:delimiter]
+    return match.group(1).upper(), path, line[delimiters[0]:]
 
 
 def _run_rclone(env: dict[str, str], *args: str) -> str:
@@ -468,19 +499,30 @@ def _content_inventory(
 
 
 def _copy(
-    env: dict[str, str], source: str, destination: str, object_count: int, *, exclude_marker: bool = False
+    env: dict[str, str], source: str, destination: str, expected_paths: set[str], *, exclude_marker: bool = False
 ) -> None:
+    object_count = len(expected_paths)
     args = ["copy", source, destination, "--transfers", MAX_TRANSFERS,
             "--checkers", MAX_CHECKERS, "--ignore-existing", "--create-empty-src-dirs=false",
             "--server-side-across-configs", "--log-level", "INFO", "--stats", "0"]
     if exclude_marker:
         args.extend(("--exclude", f"/{COMMIT_MARKER}"))
-    server_copy_count = 0
+    server_copy_paths: set[str] = set()
+    error_line_count = 0
 
     def read_copy_result(line: str) -> None:
-        nonlocal server_copy_count
-        if "Copied (server-side copy)" in line:
-            server_copy_count += 1
+        nonlocal error_line_count
+        severity, object_path, result = _rclone_copy_result_parts(line, expected_paths)
+        if severity == "INFO" and object_path is not None and result is not None:
+            if RCLONE_SERVER_COPY_RESULT.fullmatch(result):
+                server_copy_paths.add(object_path)
+        if severity == "ERROR":
+            error_line_count += 1
+
+    def failure_summary(reason: str = "rclone copy operation failed") -> str:
+        details = [f"server-side copies {len(server_copy_paths)}/{object_count}",
+                   f"{error_line_count} error lines"]
+        return reason + " (" + "; ".join(details) + ")"
 
     try:
         _stream_rclone_lines(env, args, output="stderr", on_line=read_copy_result)
@@ -489,9 +531,9 @@ def _copy(
             raise
         if "unavailable" in str(error):
             raise
-        raise SnapshotError("rclone copy operation failed") from None
-    if server_copy_count != object_count:
-        raise SnapshotError("rclone did not server-side-copy every object")
+        raise SnapshotError(failure_summary()) from None
+    if len(server_copy_paths) != object_count:
+        raise SnapshotError(failure_summary("rclone did not server-side-copy every object"))
 
 
 def _assert_same(actual: list[dict[str, object]], expected: list[dict[str, object]], what: str) -> None:
@@ -610,7 +652,7 @@ def create(manifest: Path, env: dict[str, str]) -> str:
         raise SnapshotError("live media contains a reserved snapshot marker path")
     source_content = _content_inventory(rclone_env, source, source_inventory)
     if source_content:
-        _copy(rclone_env, source, snapshot, len(source_content))
+        _copy(rclone_env, source, snapshot, {str(item["path"]) for item in source_content})
     copied_inventory = _content_inventory(rclone_env, snapshot, _inventory(rclone_env, snapshot))
     _assert_same(copied_inventory, source_content, "snapshot")
     marker_path = f"{snapshot}/{COMMIT_MARKER}"
@@ -694,7 +736,7 @@ def restore(manifest: Path, env: dict[str, str]) -> None:
     if _inventory(rclone_env, destination):
         raise SnapshotError("restore destination is not empty; refusing to overwrite it")
     if expected:
-        _copy(rclone_env, snapshot, destination, len(expected), exclude_marker=True)
+        _copy(rclone_env, snapshot, destination, {str(item["path"]) for item in expected}, exclude_marker=True)
     restored_inventory = _content_inventory(rclone_env, destination, _inventory(rclone_env, destination))
     _assert_same(restored_inventory, expected, "restore destination")
 
