@@ -36,7 +36,10 @@ def main():
     smoke_upstream.render_config = render_with_s3
     with TemporaryDirectory(prefix='continuwuity-s3-smoke-') as directory:
         with SmtpFixture() as smtp_port:
-            smoke_upstream.run_smoke(args.binary.resolve(), Path(directory), smtp_port)
+            smoke_upstream.run_smoke(
+                args.binary.resolve(), Path(directory), smtp_port,
+                expected_media_backend='s3',
+            )
 
 
 if __name__ == '__main__':

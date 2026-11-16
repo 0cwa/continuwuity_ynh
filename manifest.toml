@@ -56,6 +56,63 @@ ram.runtime = "512M"
     choices.dex = "YunoHost accounts through Dex (requires an installed Dex app and OAuth-capable clients)"
     default = "password"
 
+    [install.media_backend]
+    ask.en = "Media storage backend"
+    help.en = "Choose once during installation. Existing media is not migrated if storage changes; the package blocks later backend changes. S3 mode requires the S3-enabled candidate binary and a separate remote snapshot bucket."
+    type = "select"
+    choices.local = "Local filesystem (recommended default)"
+    choices.s3 = "S3-compatible object storage"
+    default = "local"
+
+    [install.media_s3_endpoint]
+    ask.en = "S3-compatible endpoint"
+    help.en = "HTTPS endpoint for a compatible object store. Leave empty for AWS S3. Plain HTTP is not permitted."
+    type = "url"
+    optional = true
+    default = ""
+    visible = "media_backend == 's3'"
+
+    [install.media_s3_bucket]
+    ask.en = "Live media bucket"
+    help.en = "Lowercase 3-63 character S3 bucket name for live Matrix media."
+    type = "string"
+    visible = "media_backend == 's3'"
+
+    [install.media_s3_backup_bucket]
+    ask.en = "Media snapshot bucket"
+    help.en = "Required separate bucket for remote snapshots, in the same S3 service, endpoint and region as live media. It must differ from the live media bucket."
+    type = "string"
+    visible = "media_backend == 's3'"
+
+    [install.media_s3_region]
+    ask.en = "S3 region"
+    help.en = "Region used to sign S3 requests."
+    type = "string"
+    default = "us-east-1"
+    visible = "media_backend == 's3'"
+
+    [install.media_s3_key_prefix]
+    ask.en = "Live media key prefix"
+    help.en = "A unique nonempty object-key prefix for this app instance. The package defaults it to the app ID plus /media."
+    type = "string"
+    optional = true
+    default = ""
+    visible = "media_backend == 's3'"
+
+    [install.media_s3_access_key_id]
+    ask.en = "S3 access key ID"
+    help.en = "Required with the secret key. The same static identity is used for live media and remote snapshots."
+    type = "password"
+    optional = true
+    visible = "media_backend == 's3'"
+
+    [install.media_s3_secret_access_key]
+    ask.en = "S3 secret access key"
+    help.en = "Required with the access key ID. Stored in protected generated server configuration."
+    type = "password"
+    optional = true
+    visible = "media_backend == 's3'"
+
     [install.dex_app]
     ask.en = "Existing Dex application"
     help.en = "Install Dex with working HTTPS first. Its default LDAP connector admits all YunoHost users. Continuwuity registers its OIDC client automatically."
@@ -97,4 +154,4 @@ ram.runtime = "512M"
     # The backend listens on loopback. Only YunoHost's HTTPS port is public.
 
     [resources.apt]
-    packages = ["ca-certificates", "curl", "python3", "python3-yaml"]
+    packages = ["ca-certificates", "curl", "python3", "python3-yaml", "rclone"]

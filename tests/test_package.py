@@ -35,15 +35,46 @@ class PackageTests(unittest.TestCase):
         self.assertIs(sources["extract"], False)
 
     def test_backend_stays_local_and_public_api_is_not_ssowat_protected(self):
-        config = tomllib.loads(render_config())["global"]
+        rendered = render_config()
+        config = tomllib.loads(rendered)["global"]
         self.assertEqual(config["address"], ["127.0.0.1"])
         self.assertFalse(config["allow_registration"])
         self.assertIn("registration_token_file", config)
+        self.assertNotIn("media_backend", config, "Existing release binaries default to local media.")
         manifest = tomllib.loads((PACKAGE / "manifest.toml").read_text())
         permissions = manifest["resources"]["permissions"]["main"]
         self.assertEqual(permissions["allowed"], "visitors")
         self.assertIs(permissions["auth_header"], False)
         self.assertNotIn("exposed", manifest["resources"]["ports"]["main"])
+
+    def test_s3_configuration_renders_managed_location_and_protected_static_credentials(self):
+        config = tomllib.loads(render_config(
+            media_backend="s3",
+            media_s3_config_bucket="live-media",
+            media_s3_config_key_prefix="continuwuity/media",
+            media_s3_endpoint="https://objects.example.test",
+            media_s3_region="us-east-1",
+            media_s3_access_key_id='access "id',
+            media_s3_secret_access_key="secret\\key",
+        ))["global"]
+        self.assertEqual(config["media_backend"], "s3")
+        self.assertEqual(config["media_s3"]["bucket"], "live-media")
+        self.assertEqual(config["media_s3"]["key_prefix"], "continuwuity/media")
+        self.assertEqual(config["media_s3"]["endpoint"], "https://objects.example.test")
+        self.assertIs(config["media_s3"]["allow_http"], False)
+        self.assertEqual(config["media_s3"]["access_key_id"], 'access "id')
+        self.assertEqual(config["media_s3"]["secret_access_key"], "secret\\key")
+
+    def test_restore_override_renders_only_the_temporary_bucket_and_prefix(self):
+        config = tomllib.loads(render_config(
+            media_backend="s3",
+            media_s3_config_bucket="restore-media",
+            media_s3_config_key_prefix="continuwuity/media-restore-42",
+            media_s3_region="us-east-1",
+        ))["global"]
+        self.assertEqual(config["media_s3"]["bucket"], "restore-media")
+        self.assertEqual(config["media_s3"]["key_prefix"], "continuwuity/media-restore-42")
+        self.assertEqual(config["media_s3"]["region"], "us-east-1")
 
     def test_delegated_matrix_identity_and_public_api_are_distinct(self):
         config = tomllib.loads(render_config())["global"]

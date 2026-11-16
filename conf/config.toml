@@ -16,6 +16,9 @@ max_request_size = {{ (max_upload_size | int) * 1048576 }}
 log = {{ log_level | to_json }}
 admins_list = [{{ ('@' + admin + ':' + server_name) | to_json }}]
 new_user_displayname_suffix = ""
+{% if media_backend == 's3' %}
+media_backend = "s3"
+{% endif %}
 
 # Fixed cache budgets are friendlier to small shared YunoHost machines.
 db_cache_capacity_mb = 128.0
@@ -44,4 +47,19 @@ require_email_for_token_registration = false
 {% if rtc_service_url %}
 [global.matrix_rtc]
 foci = [{ type = "livekit", livekit_service_url = {{ rtc_service_url | to_json }} }]
+{% endif %}
+
+{% if media_backend == 's3' %}
+[global.media_s3]
+bucket = {{ media_s3_config_bucket | to_json }}
+region = {{ media_s3_region | to_json }}
+key_prefix = {{ media_s3_config_key_prefix | to_json }}
+allow_http = false
+{% if media_s3_endpoint %}
+endpoint = {{ media_s3_endpoint | to_json }}
+{% endif %}
+{% if media_s3_access_key_id and media_s3_secret_access_key %}
+access_key_id = {{ media_s3_access_key_id | to_json }}
+secret_access_key = {{ media_s3_secret_access_key | to_json }}
+{% endif %}
 {% endif %}
