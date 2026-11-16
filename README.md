@@ -7,14 +7,14 @@ binaries; the homeserver source lives on
 
 Requires **YunoHost 12.1.18 or newer** on **amd64 or arm64**. The current
 default package's release, architecture-specific downloads and SHA256 checksums
-are pinned in [manifest.toml](manifest.toml). The draft S3 PR's candidate
-binaries are not yet pinned.
+are pinned in [manifest.toml](manifest.toml).
 
-This is an independent package under agent-driven development. The native S3
-media-storage work in this checkout is still in a draft PR; it has not been
-merged, and its binaries are not pinned in the package manifest. Treat S3 mode
-as an in-progress feature, not a released or production-ready option. See
-[testing](doc/TESTING.md).
+This independent package is under agent-driven development. Native S3 media
+storage uses the upstream `26.11.0-alpha.2` prerelease and is an experimental
+alpha, not a production-ready option. Its local S3 YunoHost acceptance test
+passed on amd64, and the ARM binary passed an S3 smoke test; no real-provider
+test has been run. Local media remains the recommended default. See
+[testing](doc/TESTING.md) and the [storage guide](doc/STORAGE.md).
 
 ## Support status
 
@@ -67,11 +67,12 @@ explain the distinction.
 
 The package manages the service account, loopback backend, Nginx/TLS integration,
 Matrix discovery, offline first-admin creation, and coordinated database/media
-backups. Local media storage is the default. The draft S3 mode is selected at
-installation and requires explicit static credentials; see the
-[storage guide](doc/STORAGE.md) for its limits. Optional settings cover Dex,
-verified authenticated SMTP, an existing TURN server, and a MatrixRTC LiveKit
-authorization service. It does not deploy the separate calling services.
+backups. Local media storage is the default. Experimental S3 alpha mode is
+selected at installation and requires explicit static credentials; see the
+[storage guide](doc/STORAGE.md) for its limits and test status. Optional
+settings cover Dex, verified authenticated SMTP, an existing TURN server, and
+a MatrixRTC LiveKit authorization service. It does not deploy the separate
+calling services.
 
 Backups, including automatic upgrade safety backups, contain the **full database
 and media**. YunoHost options such as `BACKUP_CORE_ONLY` or
@@ -79,12 +80,12 @@ and media**. YunoHost options such as `BACKUP_CORE_ONLY` or
 backup or upgrade, allow staging space of at least 110% of the data directory's
 allocated size plus 64 MiB, with additional space for the final YunoHost
 archive. Local mode stops the service while the snapshot is copied; on
-non-reflink filesystems this means copying the full data set. Draft S3 mode also
-copies and SHA-256 verifies a separate remote media generation while the
-database is stopped, so large media sets can lengthen the interruption and
-incur object-store request and egress charges. On small or slow hosts, schedule
-backups and upgrades for a quiet period. Mounted app data and symlinked media
-are unsupported.
+non-reflink filesystems this means copying the full data set. Experimental S3
+alpha mode also copies and SHA-256 verifies a separate remote media generation
+while the database is stopped, so large media sets can lengthen the interruption
+and incur object-store request and egress charges. On small or slow hosts,
+schedule backups and upgrades for a quiet period. Mounted app data and symlinked
+media are unsupported.
 Normal uninstall retains data, and reinstall refuses to overwrite it;
 YunoHost's purge option removes it.
 

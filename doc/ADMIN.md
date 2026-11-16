@@ -95,7 +95,7 @@ The service reads configuration in this order:
 3. `oidc.toml`: the managed optional Dex integration.
 
 Changes to `overrides.toml` require a service restart. Consult the
-[configuration for the packaged release](https://forgejo.ellis.link/continuwuation/continuwuity/src/tag/v26.9.1/conduwuit-example.toml),
+[configuration for the pinned upstream source](https://github.com/0cwa/continuwuity/blob/1c0abdccc4e47d63bd828f59da8a2f82396c265c/conduwuit-example.toml),
 since the live upstream documentation can describe a newer version.
 
 Identity, database path, listener, registration-token and startup-execution
@@ -255,16 +255,17 @@ additional capacity and monitor backup duration as media grows. Routine
 upgrades/settings changes no longer recursively change ownership of every
 database and media file.
 
-### Draft native S3 media mode
+### Experimental S3 alpha
 
-Local media remains the default. The native S3 mode described here exists only
-in the current draft PR: it is not merged, its server binaries are not pinned
-in the manifest, and it is not a released or production-ready option. The mode
-is chosen at installation; changing between local and S3 later requires a
-separately completed media migration. S3 mode requires an explicit static
-access-key ID and secret. It uses the configured S3 endpoint (or AWS S3), region
-and credentials for both live media and snapshots. Configure a separate
-snapshot bucket on that same provider, endpoint and region.
+Local media remains the default. S3 mode uses the upstream `26.11.0-alpha.2`
+prerelease and is experimental, not production-ready. The local S3 YunoHost
+acceptance test passed on amd64, and the ARM binary passed an S3 smoke test; no
+real-provider test has been run. The mode is chosen at installation; changing
+between local and S3 later requires a separately completed media migration. S3
+mode requires an explicit static access-key ID and secret. It uses the
+configured S3 endpoint (or AWS S3), region and credentials for both live media
+and snapshots. Configure a separate snapshot bucket on that same provider,
+endpoint and region.
 
 For an S3 backup, the package stops Continuwuity, copies the stopped database
 into the YunoHost archive workspace, and creates a new unique remote media
@@ -316,8 +317,8 @@ archived binary. Cross-architecture restoration is not implemented: restore on
 the original architecture, or plan a tested binary/data migration separately.
 The local backend rejects mounted data and symlinked media. Do not mount
 rclone/FUSE manually, because a missing mount could expose an empty underlying
-directory. The draft S3 lifecycle and limitations are described in the
-[storage guide](STORAGE.md); it is not a released or production-ready option.
+directory. The experimental S3 alpha lifecycle and limitations are described
+in the [storage guide](STORAGE.md); it is not production-ready.
 For encrypted offsite copies of local-mode backups, see the
 [Restic guide](STORAGE.md).
 

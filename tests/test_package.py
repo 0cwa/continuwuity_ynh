@@ -25,13 +25,20 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(manifest["packaging_format"], 2)
         self.assertEqual(manifest["integration"]["helpers_version"], "2.1")
         sources = manifest["resources"]["sources"]["main"]
-        upstream_version = manifest["version"].split("~", 1)[0]
+        self.assertEqual(manifest["version"], "26.11.0-alpha.2~ynh1")
+        candidate_release = "s3-candidate-2026-11-16"
+        expected_hashes = {
+            "amd64": "facf50a7ef577b120f3eb05c54fe631ef57c75a22fb6349a40c60e56b35b63e2",
+            "arm64": "4d6ab130433207d9332bf051444e73a72cd68352c2dbd8274524fdc7f321dcca",
+        }
         for architecture in manifest["integration"]["architectures"]:
             with self.subTest(architecture=architecture):
                 asset = sources[architecture]
-                self.assertIn(f"/v{upstream_version}/", asset["url"])
-                self.assertTrue(asset["url"].endswith(f"-static-{architecture}"))
-                self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
+                self.assertEqual(
+                    asset["url"],
+                    f"https://github.com/0cwa/continuwuity/releases/download/{candidate_release}/conduwuit-linux-static-{architecture}",
+                )
+                self.assertEqual(asset["sha256"], expected_hashes[architecture])
         self.assertIs(sources["extract"], False)
 
     def test_backend_stays_local_and_public_api_is_not_ssowat_protected(self):

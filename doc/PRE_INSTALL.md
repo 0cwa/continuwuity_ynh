@@ -53,9 +53,12 @@ renamed**, even when changing the web/API address later.
   portal permission is not an admission policy.
 - Backups include the full database and media, even before upgrades. In the
   default local mode, budget for a complete extra copy and a short interruption
-  while the snapshot is created. The draft S3 mode is not merged, its binaries
-  are not pinned, and it is not production-ready; it also needs remote storage
-  for every retained generation and can keep the service stopped while media is
-  hashed over the network. See [storage notes](STORAGE.md).
-- This initial package has automated and upstream-binary checks, but still needs
-  its full YunoHost VM acceptance test before a production deployment.
+  while the snapshot is created. Experimental S3 mode uses the upstream
+  `26.11.0-alpha.2` prerelease and is not production-ready. Its local S3
+  YunoHost acceptance passed on amd64, and the ARM binary passed an S3 smoke
+  test, but no real-provider test or full ARM YunoHost acceptance has been run.
+  S3 also needs remote storage for every retained generation and can keep the
+  service stopped while media is hashed over the network. See
+  [storage notes](STORAGE.md).
+- Stock YunoHost package_check passed on the pinned package branch. Keep S3 on
+  local-test storage until a real-provider validation is completed.

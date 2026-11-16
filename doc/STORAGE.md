@@ -1,13 +1,14 @@
 # Media storage and offsite backup
 
-Local POSIX storage is the default. The native S3 media mode described here is
-in a draft PR: it is not merged, its server binaries are not pinned in the
-manifest, and it must not be treated as released or production-ready. Do not
-manually mount object storage or FUSE under the data directory. The package's
-local mode rejects mounted data and symlinked media rather than risking an
-incomplete backup.
+Local POSIX storage is the default. Native S3 media mode uses the upstream
+`26.11.0-alpha.2` prerelease and remains an experimental alpha, not a
+production-ready option. The local S3 YunoHost acceptance test passed on amd64,
+and the ARM binary passed an S3 smoke test; no real-provider test has been run.
+Do not manually mount object storage or FUSE under the data directory. The
+package's local mode rejects mounted data and symlinked media rather than
+risking an incomplete backup.
 
-## Draft native S3 media mode
+## Experimental native S3 media mode
 
 S3 mode is selected during installation and requires an explicit static access
 key ID and secret. The live media bucket and the distinct snapshot bucket must
