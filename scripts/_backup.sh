@@ -246,6 +246,7 @@ continuwuity_snapshot_data() (
     # Stop even an activating/failed unit: the helper intentionally skips units
     # that aren't active, which is too weak a guarantee for a database snapshot.
     systemctl stop "$app.service"
+    printf '%s\n' "Backup stage: service stopped; copying local database snapshot."
     snapshot_parent="$(dirname -- "$snapshot")"
     mkdir -p -- "$snapshot_parent"
     staging_dir="$(mktemp -d --tmpdir="$snapshot_parent" ".${app}.snapshot.XXXXXX")"
@@ -256,6 +257,7 @@ continuwuity_snapshot_data() (
     continuwuity_validate_rocksdb_marker "$staged_data" \
         "The copied data snapshot lacks a valid RocksDB CURRENT marker; refusing an incomplete backup."
     if [[ "$s3_media" -eq 1 ]]; then
+        printf '%s\n' "Backup stage: local database snapshot is ready; verifying and copying S3 media."
         continuwuity_run_s3_snapshot_helper create "$manifest" \
             || ynh_die "Could not create and verify the remote S3 media snapshot. The database was not published as a backup."
         [[ -f "$manifest" && -s "$manifest" && ! -L "$manifest" ]] \

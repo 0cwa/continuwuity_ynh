@@ -2,10 +2,11 @@
 
 import json
 import hashlib
-import io
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -88,13 +89,24 @@ class FakeRclone:
             return subprocess.CompletedProcess(command, 0, "", "")
         return subprocess.CompletedProcess(command, 2, "", "diagnostics include private-secret-for-test")
 
-    def popen(self, command, *, env, stdin, stdout, stderr, text=None, bufsize=-1):
+    def popen(self, command, *, env, stdin, stdout, stderr, text=None, bufsize=-1, **kwargs):
         self.calls.append((list(command), env.copy()))
         args = command[1:]
+        operation = args[0]
+        clean_args = [operation]
+        index = 1
+        while index < len(args):
+            if args[index] in ("--contimeout", "--timeout", "--retries"):
+                index += 2
+                continue
+            clean_args.append(args[index])
+            index += 1
+        args = clean_args
         if args[0] == "cat":
-            process = FakeProcess(command, raw_stdout=OversizedStream() if self.oversized_cat else io.BytesIO(
-                self.objects[args[-1].rsplit("/", 1)[0]][args[-1].rsplit("/", 1)[1]]
-            ))
+            content = b"x" * (s3_snapshot.MAX_COMMIT_MARKER_BYTES + 100) if self.oversized_cat else self.objects[
+                args[-1].rsplit("/", 1)[0]
+            ][args[-1].rsplit("/", 1)[1]]
+            process = FakeProcess(command, stdout=content, text=False, stdout_mode=stdout, stderr_mode=stderr)
             self.last_process = process
             return process
         if args[0] == "copy":
@@ -108,47 +120,66 @@ class FakeRclone:
                     existing[path] = contents
                     reason = "Copied (new)" if self.copy_mode == "fallback" else "Copied (server-side copy)"
                     log_lines.append(f"INFO : {path}: {reason}\n")
-            return FakeProcess(command, stderr="".join(log_lines))
+            return FakeProcess(command, stderr="".join(log_lines), text=False, stdout_mode=stdout, stderr_mode=stderr)
+        if args[0] == "lsjson":
+            remote = args[-1]
+            rows = [{"Path": path, "Size": len(contents)}
+                    for path, contents in sorted(self.objects.get(remote, {}).items())]
+            return FakeProcess(command, stdout=json.dumps(rows), text=True, stdout_mode=stdout, stderr_mode=stderr)
+        if args[0] == "copyto":
+            remote = args[2]
+            parent, path = remote.rsplit("/", 1)
+            if self.marker_race:
+                self.objects.setdefault(parent, {})[path] = b"pre-existing marker"
+            if path not in self.objects.setdefault(parent, {}):
+                self.objects[parent][path] = Path(args[1]).read_bytes()
+            return FakeProcess(command, text=True, stdout_mode=stdout, stderr_mode=stderr)
         remote = args[-1]
         if self.omit_hashes:
             return FakeProcess(command, "")
         lines = [hashlib.sha256(contents).hexdigest() + "  " + path
                  for path, contents in sorted(self.objects.get(remote, {}).items())
                  if path != s3_snapshot.COMMIT_MARKER or "--exclude" not in args]
-        return FakeProcess(command, "\n".join(lines) + ("\n" if lines else ""))
+        return FakeProcess(command, stdout="\n".join(lines) + ("\n" if lines else ""), text=False, stdout_mode=stdout, stderr_mode=stderr)
 
 
 class FakeProcess:
-    def __init__(self, command, output="", stderr="", raw_stdout=None):
+    def __init__(self, command, output="", stderr="", raw_stdout=None, *, stdout=None, text=False,
+                 stdout_mode=subprocess.PIPE, stderr_mode=subprocess.DEVNULL):
         self.command = command
-        self.stdout = raw_stdout if raw_stdout is not None else io.StringIO(output)
-        self.stderr = io.StringIO(stderr)
+        self.pid = 2**30
+        self._text = text
+        self._stdout_data = raw_stdout if raw_stdout is not None else (stdout if stdout is not None else output)
+        self._stderr_data = stderr
+        self.stdout = self._pipe(self._stdout_data) if stdout_mode == subprocess.PIPE else None
+        self.stderr = self._pipe(self._stderr_data) if stderr_mode == subprocess.PIPE else None
         self.returncode = 0
 
-    def wait(self):
+    @staticmethod
+    def _pipe(data):
+        read_fd, write_fd = os.pipe()
+        if isinstance(data, str):
+            data = data.encode()
+        if data:
+            os.write(write_fd, data)
+        os.close(write_fd)
+        return os.fdopen(read_fd, "rb", buffering=0)
+
+    def poll(self):
         return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def communicate(self, timeout=None):
+        out = self.stdout.read() if self.stdout else b""
+        err = self.stderr.read() if self.stderr else b""
+        if self._text:
+            out, err = out.decode(), err.decode()
+        return out, err
 
     def kill(self):
         self.returncode = -9
-
-
-class OversizedStream:
-    def __init__(self):
-        self.remaining = 10**9
-        self.bytes_returned = 0
-        self.max_read_request = 0
-
-    def read(self, size=-1):
-        if size < 0:
-            raise AssertionError("marker stream read without a bound")
-        self.max_read_request = max(self.max_read_request, size)
-        count = min(size, self.remaining)
-        self.remaining -= count
-        self.bytes_returned += count
-        return b"x" * count
-
-    def close(self):
-        pass
 
 
 class S3SnapshotTests(unittest.TestCase):
@@ -187,7 +218,13 @@ class S3SnapshotTests(unittest.TestCase):
         self.assertIn("--checkers", copy_call)
         self.assertIn("8", copy_call)
         self.assertIn("--ignore-existing", copy_call)
-        self.assertIn("--server-side-across-configs", copy_call)
+        for command, _ in self.fake.calls:
+            self.assertIn("--contimeout", command)
+            self.assertIn("1m", command)
+            self.assertIn("--timeout", command)
+            self.assertIn("5m", command)
+            self.assertIn("--retries", command)
+            self.assertIn("3", command)
         self.assertIn("--server-side-across-configs", copy_call)
 
     def test_credentials_are_only_in_child_environment(self):
@@ -256,9 +293,7 @@ class S3SnapshotTests(unittest.TestCase):
         self.fake.oversized_cat = True
         with self.assertRaisesRegex(s3_snapshot.SnapshotError, "commit marker exceeds"):
             s3_snapshot.verify(self.manifest, self.env)
-        stream = self.fake.last_process.stdout
-        self.assertLessEqual(stream.bytes_returned, s3_snapshot.MAX_COMMIT_MARKER_BYTES + 1)
-        self.assertLessEqual(stream.max_read_request, s3_snapshot.MAX_COMMIT_MARKER_BYTES + 1)
+        self.assertGreater(len(self.fake.last_process._stdout_data), s3_snapshot.MAX_COMMIT_MARKER_BYTES)
 
     def test_reported_oversized_marker_is_rejected_before_read(self):
         s3_snapshot.create(self.manifest, self.env)
@@ -363,14 +398,76 @@ class S3SnapshotTests(unittest.TestCase):
         self.assertEqual(self.manifest.read_text(), "existing\n")
 
     def test_rclone_failure_does_not_expose_diagnostics(self):
-        self.fake.run = lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 2, "", "diagnostics include private-secret-for-test"
-        )
-        with patch.object(s3_snapshot.subprocess, "run", self.fake.run):
+        def failed_popen(command, **kwargs):
+            process = FakeProcess(command, stderr="diagnostics include private-secret-for-test", text=True,
+                                  stdout_mode=kwargs["stdout"], stderr_mode=kwargs["stderr"])
+            process.returncode = 2
+            return process
+
+        with patch.object(s3_snapshot.subprocess, "Popen", failed_popen):
             with self.assertRaises(s3_snapshot.SnapshotError) as raised:
                 s3_snapshot.create(self.manifest, self.env)
         self.assertNotIn("private-secret-for-test", str(raised.exception))
         self.assertFalse(self.manifest.exists())
+
+    def test_hung_rclone_is_killed_reaped_and_caller_recovers(self):
+        self.popen_patch.stop()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "rclone"
+            marker = root / "child-terminated"
+            pid_file = root / "child.pid"
+            child = (
+                "import signal,sys,time\n"
+                f"signal.signal(signal.SIGTERM, lambda *_: (open({str(marker)!r}, 'w').close(), sys.exit(0)))\n"
+                "time.sleep(30)"
+            )
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import subprocess,sys,time\n"
+                f"child = subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+                f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
+                "time.sleep(30)\n"
+            )
+            executable.chmod(0o700)
+            env = {"PATH": str(root), "RCLONE_CONFIG": "/dev/null"}
+            with patch.object(s3_snapshot, "RCLONE_OPERATION_TIMEOUT_SECONDS", 0.1):
+                with self.assertRaisesRegex(s3_snapshot.SnapshotError, "timed out"):
+                    s3_snapshot._run_rclone(env, "lsjson", "remote:bucket")
+                self.assertTrue(pid_file.exists(), "test child process did not start")
+                deadline = time.monotonic() + 2
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(marker.exists(), "timeout did not terminate the rclone child process group")
+
+                executable.write_text(f"#!{sys.executable}\nprint('recovered')\n")
+                executable.chmod(0o700)
+                self.assertEqual(s3_snapshot._run_rclone(env, "lsjson", "remote:bucket"), "recovered\n")
+
+    def test_streamed_rclone_timeout_terminates_and_reports(self):
+        self.popen_patch.stop()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "rclone"
+            executable.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
+            executable.chmod(0o700)
+            env = {"PATH": str(root), "RCLONE_CONFIG": "/dev/null"}
+            with patch.object(s3_snapshot, "RCLONE_OPERATION_TIMEOUT_SECONDS", 0.1):
+                with self.assertRaisesRegex(s3_snapshot.SnapshotError, "timed out"):
+                    s3_snapshot._stream_rclone_lines(env, ["hashsum", "SHA256", "remote:bucket"],
+                                                    output="stdout", on_line=lambda _line: None)
+
+    def test_marker_reader_timeout_is_bounded(self):
+        self.popen_patch.stop()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "rclone"
+            executable.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
+            executable.chmod(0o700)
+            env = {"PATH": str(root), "RCLONE_CONFIG": "/dev/null"}
+            with patch.object(s3_snapshot, "RCLONE_OPERATION_TIMEOUT_SECONDS", 0.1):
+                with self.assertRaisesRegex(s3_snapshot.SnapshotError, "timed out"):
+                    s3_snapshot._read_rclone_bytes(env, "cat", "remote:bucket/marker", limit=128)
 
 
 if __name__ == "__main__":

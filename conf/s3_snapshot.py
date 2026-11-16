@@ -31,6 +31,12 @@ to 4/8. Restore uses ``--ignore-existing`` as a second guard against a target
 race, then verifies the complete target inventory; a race can leave a partial
 fresh target, which is reported and must be discarded manually before retry.
 
+Every rclone invocation has a 24-hour wall-clock deadline, a 1-minute
+connection timeout, a 5-minute I/O inactivity timeout, and at most 3
+operation-level retries. This allows large snapshots to run for hours while
+preventing an idle provider connection from holding the backup/restore hook
+indefinitely. Timed-out rclone process groups are terminated and reaped.
+
 The YunoHost backup hook creates generations, and the restore hook verifies and
 materializes a selected generation through this helper.
 """
@@ -42,9 +48,12 @@ import hashlib
 import json
 import os
 import re
+import selectors
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +69,13 @@ COMMIT_MARKER = ".continuwuity-snapshot-commit.json"
 MAX_COMMIT_MARKER_BYTES = 4096
 MAX_TRANSFERS = "4"
 MAX_CHECKERS = "8"
+# Hashing and server-side copying can legitimately take many hours for large
+# media buckets. Bound each individual rclone operation at 24 hours; an
+# operation that reaches this deadline is terminated as a process group.
+RCLONE_OPERATION_TIMEOUT_SECONDS = 24 * 60 * 60
+RCLONE_TERMINATE_GRACE_SECONDS = 3
+MAX_RCLONE_LINE_BYTES = 64 * 1024
+RCLONE_NETWORK_FLAGS = ["--contimeout", "1m", "--timeout", "5m", "--retries", "3"]
 
 
 def _required(env: dict[str, str], name: str) -> str:
@@ -154,19 +170,236 @@ def _remote(remote: str, bucket: str, prefix: str) -> str:
     return f"{remote}:{bucket}" + (f"/{prefix}" if prefix else "")
 
 
+def _rclone_command(*args: str) -> list[str]:
+    # Place global flags after the operation for compatibility with rclone's
+    # command-line parser and to keep the subcommand in argv[1].
+    return ["rclone", *args[:1], *RCLONE_NETWORK_FLAGS, *args[1:]]
+
+
+def _rclone_stage(args: tuple[str, ...] | list[str]) -> str:
+    operation = args[0] if args else ""
+    role = "remote"
+    remote_arg = None
+    if operation in ("lsjson", "hashsum") and args:
+        remote_arg = args[-1]
+    elif operation == "copy" and len(args) > 1:
+        remote_arg = args[1]
+    if remote_arg:
+        remote_role = remote_arg.split(":", 1)[0]
+        role = {"LIVE": "live", "SNAPSHOT": "snapshot", "RESTORE": "restore target"}.get(
+            remote_role, "remote"
+        )
+    return {
+        "lsjson": f"{role} object inventory",
+        "hashsum": f"{role} content hashing",
+        "copy": f"{role} server-side object copy",
+        "copyto": "snapshot commit marker publication",
+        "cat": "snapshot commit marker read",
+    }.get(operation, "remote operation")
+
+
+def _stage_notice(stage: str, state: str) -> None:
+    # Never include remote names, paths, credentials, or raw rclone arguments.
+    print(f"S3 snapshot: {stage} {state}.", file=sys.stderr, flush=True)
+
+
 def _run_rclone(env: dict[str, str], *args: str) -> str:
+    stage = _rclone_stage(args)
+    _stage_notice(stage, "started")
     try:
-        result = subprocess.run(
-            ["rclone", *args], env=env, check=False, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        process = subprocess.Popen(
+            _rclone_command(*args), env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,
         )
     except OSError:
+        _stage_notice(stage, "failed")
         raise SnapshotError("rclone is unavailable") from None
-    if result.returncode:
+    try:
+        stdout, _stderr = process.communicate(timeout=RCLONE_OPERATION_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _terminate_rclone(process)
+        _stage_notice(stage, "timed out")
+        raise SnapshotError("rclone operation timed out") from None
+    except BaseException:
+        _terminate_rclone(process)
+        _stage_notice(stage, "failed")
+        raise
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+    if process.returncode:
         # Do not relay rclone diagnostics: some third-party backends include
         # request details, and the operator-facing error must never leak secrets.
-        raise SnapshotError(f"rclone operation failed (exit {result.returncode})")
-    return result.stdout
+        _stage_notice(stage, "failed")
+        raise SnapshotError(f"rclone operation failed (exit {process.returncode})")
+    _stage_notice(stage, "completed")
+    return stdout
+
+
+def _terminate_rclone(process: subprocess.Popen[bytes] | subprocess.Popen[str]) -> None:
+    """Stop and reap an rclone process and any children it may have started."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=RCLONE_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    # Kill any remaining descendants too. The leader may already have exited
+    # while one of its children still holds a captured pipe open.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait()
+    except OSError:
+        pass
+
+
+def _stream_rclone_lines(env: dict[str, str], args: list[str], *, output: str, on_line) -> None:
+    """Read rclone line output incrementally with a wall-clock deadline."""
+    stage = _rclone_stage(args)
+    _stage_notice(stage, "started")
+    try:
+        process = subprocess.Popen(
+            _rclone_command(*args), env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if output == "stdout" else subprocess.DEVNULL,
+            stderr=subprocess.PIPE if output == "stderr" else subprocess.DEVNULL,
+            start_new_session=True,
+            bufsize=0,
+        )
+    except OSError:
+        _stage_notice(stage, "failed")
+        raise SnapshotError("rclone is unavailable") from None
+    pipe = process.stdout if output == "stdout" else process.stderr
+    assert pipe is not None
+    selector = selectors.DefaultSelector()
+    pending = bytearray()
+    deadline = time.monotonic() + RCLONE_OPERATION_TIMEOUT_SECONDS
+    try:
+        selector.register(pipe, selectors.EVENT_READ)
+        eof = False
+        while not eof:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SnapshotError("rclone operation timed out")
+            events = selector.select(min(remaining, 0.25))
+            if not events:
+                if process.poll() is not None:
+                    # Drain buffered output before treating EOF as complete.
+                    continue
+                continue
+            for key, _ in events:
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(pipe)
+                    eof = True
+                    break
+                pending.extend(chunk)
+                while True:
+                    end = pending.find(b"\n")
+                    if end < 0:
+                        if len(pending) > MAX_RCLONE_LINE_BYTES:
+                            raise SnapshotError("rclone output line exceeds the size limit")
+                        break
+                    if end > MAX_RCLONE_LINE_BYTES:
+                        raise SnapshotError("rclone output line exceeds the size limit")
+                    line = bytes(pending[:end]).rstrip(b"\r")
+                    del pending[: end + 1]
+                    on_line(line.decode("utf-8", errors="strict"))
+        if pending:
+            if len(pending) > MAX_RCLONE_LINE_BYTES:
+                raise SnapshotError("rclone output line exceeds the size limit")
+            on_line(bytes(pending).decode("utf-8", errors="strict"))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SnapshotError("rclone operation timed out")
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            raise SnapshotError("rclone operation timed out") from None
+        if returncode:
+            raise SnapshotError(f"rclone operation failed (exit {returncode})")
+        _stage_notice(stage, "completed")
+    except UnicodeDecodeError:
+        _terminate_rclone(process)
+        _stage_notice(stage, "failed")
+        raise SnapshotError("rclone returned invalid text output") from None
+    except BaseException as error:
+        _terminate_rclone(process)
+        _stage_notice(stage, "timed out" if "timed out" in str(error) else "failed")
+        raise
+    finally:
+        selector.close()
+        pipe.close()
+        other_pipe = process.stderr if output == "stdout" else process.stdout
+        if other_pipe is not None:
+            other_pipe.close()
+
+
+def _read_rclone_bytes(env: dict[str, str], *args: str, limit: int) -> bytes:
+    """Read bounded binary output, with a deadline even if the pipe stalls."""
+    stage = _rclone_stage(args)
+    _stage_notice(stage, "started")
+    try:
+        process = subprocess.Popen(
+            _rclone_command(*args), env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True, bufsize=0,
+        )
+    except OSError:
+        _stage_notice(stage, "failed")
+        raise SnapshotError("rclone is unavailable") from None
+    assert process.stdout is not None
+    selector = selectors.DefaultSelector()
+    payload = bytearray()
+    deadline = time.monotonic() + RCLONE_OPERATION_TIMEOUT_SECONDS
+    try:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        eof = False
+        while not eof:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SnapshotError("rclone operation timed out")
+            events = selector.select(min(remaining, 0.25))
+            if not events:
+                if process.poll() is not None:
+                    continue
+                continue
+            for key, _ in events:
+                chunk = os.read(key.fd, min(65536, limit + 1 - len(payload)))
+                if not chunk:
+                    selector.unregister(process.stdout)
+                    eof = True
+                    break
+                payload.extend(chunk)
+                if len(payload) > limit:
+                    raise SnapshotError("snapshot commit marker exceeds the expected size")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SnapshotError("rclone operation timed out")
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            raise SnapshotError("rclone operation timed out") from None
+        if returncode:
+            raise SnapshotError("snapshot commit marker is missing or unreadable")
+        _stage_notice(stage, "completed")
+        return bytes(payload)
+    except BaseException as error:
+        _terminate_rclone(process)
+        _stage_notice(stage, "timed out" if "timed out" in str(error) else "failed")
+        raise
+    finally:
+        selector.close()
+        process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
 
 
 def _inventory(env: dict[str, str], remote: str) -> list[dict[str, object]]:
@@ -203,37 +436,29 @@ def _content_inventory(
     if exclude_marker:
         args.extend(("--exclude", f"/{COMMIT_MARKER}"))
     args.append(remote)
-    command = ["rclone", *args]
-    try:
-        process = subprocess.Popen(
-            command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, bufsize=1,
-        )
-    except OSError:
-        raise SnapshotError("rclone is unavailable") from None
-    assert process.stdout is not None
     digests: dict[str, str] = {}
     invalid_output = False
+
+    def read_digest(line: str) -> None:
+        nonlocal invalid_output
+        try:
+            digest, path = line.split("  ", 1)
+        except ValueError:
+            invalid_output = True
+            return
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or path in digests:
+            invalid_output = True
+            return
+        digests[path] = digest
+
     try:
-        for line in process.stdout:
-            line = line.rstrip("\n")
-            try:
-                digest, path = line.split("  ", 1)
-            except ValueError:
-                invalid_output = True
-                continue
-            if not re.fullmatch(r"[0-9a-f]{64}", digest) or path in digests:
-                invalid_output = True
-                continue
-            digests[path] = digest
-    except OSError:
-        process.kill()
-        process.wait()
-        raise SnapshotError("could not read the rclone SHA-256 inventory") from None
-    finally:
-        process.stdout.close()
-    if process.wait() != 0:
-        raise SnapshotError("rclone SHA-256 operation failed")
+        _stream_rclone_lines(env, args, output="stdout", on_line=read_digest)
+    except SnapshotError as error:
+        if "timed out" in str(error):
+            raise
+        if "unavailable" in str(error):
+            raise
+        raise SnapshotError("rclone SHA-256 operation failed") from None
     if invalid_output:
         raise SnapshotError("rclone returned an invalid SHA-256 inventory")
     paths = {str(item["path"]) for item in inventory}
@@ -250,28 +475,21 @@ def _copy(
             "--server-side-across-configs", "--log-level", "INFO", "--stats", "0"]
     if exclude_marker:
         args.extend(("--exclude", f"/{COMMIT_MARKER}"))
-    command = ["rclone", *args]
-    try:
-        process = subprocess.Popen(
-            command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE, text=True, bufsize=1,
-        )
-    except OSError:
-        raise SnapshotError("rclone is unavailable") from None
-    assert process.stderr is not None
     server_copy_count = 0
+
+    def read_copy_result(line: str) -> None:
+        nonlocal server_copy_count
+        if "Copied (server-side copy)" in line:
+            server_copy_count += 1
+
     try:
-        for line in process.stderr:
-            if "Copied (server-side copy)" in line:
-                server_copy_count += 1
-    except OSError:
-        process.kill()
-        process.wait()
-        raise SnapshotError("could not read the rclone copy result") from None
-    finally:
-        process.stderr.close()
-    if process.wait() != 0:
-        raise SnapshotError("rclone copy operation failed")
+        _stream_rclone_lines(env, args, output="stderr", on_line=read_copy_result)
+    except SnapshotError as error:
+        if "timed out" in str(error):
+            raise
+        if "unavailable" in str(error):
+            raise
+        raise SnapshotError("rclone copy operation failed") from None
     if server_copy_count != object_count:
         raise SnapshotError("rclone did not server-side-copy every object")
 
@@ -316,35 +534,12 @@ def _read_remote_marker(env: dict[str, str], remote_path: str, expected_size: in
     if expected_size > MAX_COMMIT_MARKER_BYTES:
         raise SnapshotError("snapshot commit marker exceeds the size limit")
     try:
-        process = subprocess.Popen(
-            ["rclone", "cat", remote_path], env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
-    except OSError:
-        raise SnapshotError("snapshot commit marker is unreadable") from None
-    assert process.stdout is not None
-    payload = bytearray()
-    oversized = False
-    try:
-        while len(payload) <= expected_size:
-            chunk = process.stdout.read(min(1024, expected_size + 1 - len(payload)))
-            if not chunk:
-                break
-            payload.extend(chunk)
-            if len(payload) > expected_size:
-                oversized = True
-                process.kill()
-                break
-    except OSError:
-        process.kill()
-        process.wait()
-        raise SnapshotError("snapshot commit marker is unreadable") from None
-    finally:
-        process.stdout.close()
-    returncode = process.wait()
-    if oversized:
-        raise SnapshotError("snapshot commit marker exceeds the expected size")
-    if returncode != 0 or len(payload) != expected_size:
+        payload = _read_rclone_bytes(env, "cat", remote_path, limit=expected_size)
+    except SnapshotError as error:
+        if "timed out" in str(error) or "exceeds" in str(error):
+            raise
+        raise SnapshotError("snapshot commit marker is missing or unreadable") from None
+    if len(payload) != expected_size:
         raise SnapshotError("snapshot commit marker is missing or unreadable")
     try:
         return payload.decode("utf-8")
