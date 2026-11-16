@@ -315,6 +315,43 @@ def login_and_upload(port: int, label: str, payload: bytes) -> tuple[str, str]:
     return token, result["content_uri"]
 
 
+def probe_s3_from_service_context() -> None:
+    """Separate loopback reachability from CA validation using the app sandbox."""
+    base = [
+        "systemd-run", "--quiet", "--pipe", "--wait", "--collect",
+        f"--property=User={APP}", f"--property=Group={APP}",
+        "--property=NoNewPrivileges=true", "--property=PrivateTmp=true",
+        "--property=PrivateDevices=true", "--property=ProtectSystem=strict",
+        "--property=ProtectHome=read-only",
+        "--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+        "--", "/usr/bin/curl", "--silent", "--show-error", "--max-time", "5",
+        "--output", "/dev/null", "--write-out", "%{http_code}",
+    ]
+    url = f"{S3_ENDPOINT}/{LIVE_BUCKET}"
+
+    def run_probe(label: str, *, insecure: bool) -> subprocess.CompletedProcess[str]:
+        command_line = [*base]
+        if insecure:
+            command_line.append("--insecure")
+        command_line.append(url)
+        result = subprocess.run(command_line, capture_output=True, text=True, check=False, timeout=15)
+        print(
+            f"{label}: exit={result.returncode}, HTTP={result.stdout.strip() or 'none'}",
+            flush=True,
+        )
+        if result.stderr:
+            print(_redact(result.stderr.strip()), flush=True)
+        return result
+
+    trusted = run_probe("App systemd context with CA verification", insecure=False)
+    unverified = run_probe("App systemd context with TLS verification disabled", insecure=True)
+    if trusted.returncode != 0 and unverified.returncode == 0:
+        raise RuntimeError("The app systemd context cannot validate the local S3 TLS certificate.")
+    if trusted.returncode != 0 and unverified.returncode != 0:
+        raise RuntimeError("The app systemd context cannot reach the loopback S3 listener even with TLS verification disabled.")
+    print("PASS: app systemd context can reach the loopback S3 endpoint with verified TLS", flush=True)
+
+
 def settings() -> dict:
     import yaml
 
@@ -539,6 +576,7 @@ def main() -> None:
     try:
         ensure_yunohost()
         install_package()
+        probe_s3_from_service_context()
         port = app_port()
 
         initial_payload = b"native YunoHost S3 backup acceptance media\n"
