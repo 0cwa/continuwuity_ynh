@@ -94,7 +94,8 @@ jobs:
           printf '%s  %s\n' "$SEAWEED_SHA256" "$RUNNER_TEMP/seaweed.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/seaweed.tar.gz" -C "$RUNNER_TEMP" weed
           mkdir -p "$RUNNER_TEMP/seaweed-data"
-          "$RUNNER_TEMP/weed" server -ip=127.0.0.1 -ip.bind=127.0.0.1 \
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_REGION \
+            "$RUNNER_TEMP/weed" server -ip=127.0.0.1 -ip.bind=127.0.0.1 \
             -dir="$RUNNER_TEMP/seaweed-data" -master.port=19333 -master.volumeSizeLimitMB=64 \
             -volume.port=18080 -volume.max=2 -volume.preStopSeconds=0 \
             -filer -filer.port=18888 -s3 -s3.port=18333 -master.telemetry=false \
