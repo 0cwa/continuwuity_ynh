@@ -108,21 +108,52 @@ def setup_s3_fixture(binary: Path, weed: Path) -> subprocess.Popen[bytes]:
     shutil.copyfile(binary, served_binary)
     served_binary.chmod(0o755)
 
+    ca_key = FIXTURE_DIR / "test-ca.key"
+    ca_cert = FIXTURE_DIR / "test-ca.crt"
     key = FIXTURE_DIR / "server.key"
+    csr = FIXTURE_DIR / "server.csr"
     cert = FIXTURE_DIR / "server.crt"
+    extensions = FIXTURE_DIR / "server.ext"
+    # The S3 client rejects a self-signed leaf, so serve a normal leaf signed
+    # by a separate CA and trust only that CA in the guest.
     command(
-        "Create a guest-local TLS certificate",
+        "Create a guest-local TLS certificate authority",
         [
             "openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048",
-            "-keyout", str(key), "-out", str(cert), "-days", "2",
-            "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+            "-keyout", str(ca_key), "-out", str(ca_cert), "-days", "1",
+            "-subj", "/CN=Local S3 Repro CA",
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign",
         ],
     )
+    command(
+        "Create a guest-local TLS server key and request",
+        [
+            "openssl", "req", "-new", "-nodes", "-newkey", "rsa:2048",
+            "-keyout", str(key), "-out", str(csr), "-subj", "/CN=127.0.0.1",
+        ],
+    )
+    extensions.write_text(
+        "subjectAltName=IP:127.0.0.1\n"
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n",
+        encoding="utf-8",
+    )
+    command(
+        "Sign the guest-local TLS server certificate",
+        [
+            "openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_cert),
+            "-CAkey", str(ca_key), "-CAcreateserial", "-out", str(cert),
+            "-days", "1", "-extfile", str(extensions),
+        ],
+    )
+    ca_key.chmod(0o600)
     key.chmod(0o600)
-    trusted_cert = Path("/usr/local/share/ca-certificates/continuwuity-s3-acceptance.crt")
+    trusted_cert = Path("/usr/local/share/ca-certificates/continuwuity-s3-acceptance-ca.crt")
     trusted_cert.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(cert, trusted_cert)
-    command("Trust the guest-local TLS certificate", ["update-ca-certificates"])
+    shutil.copyfile(ca_cert, trusted_cert)
+    command("Trust the guest-local TLS certificate authority", ["update-ca-certificates"])
 
     nginx_conf = Path("/etc/nginx/conf.d/continuwuity-s3-acceptance.conf")
     nginx_conf.write_text(
