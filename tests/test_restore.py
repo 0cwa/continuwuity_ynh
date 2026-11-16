@@ -19,8 +19,38 @@ source() {
 ynh_die() { printf '%s\n' "$*" >&2; exit 1; }
 ynh_print_warn() { printf 'WARN: %s\n' "$*" >&2; }
 ynh_script_progression() { :; }
+python3() {
+    if [[ "${1:-}" == "$YNH_APP_BASEDIR/conf/s3_snapshot.py" ]]; then
+        local operation="$2" manifest="${4:-}"
+        printf 's3:%s\n' "$operation" >> "$TEST_ROOT/events.log"
+        [[ -s "$manifest" ]] || return 41
+        if [[ "$operation" == restore ]]; then
+            [[ -n "${media_s3_restore_bucket:-}" && -n "${media_s3_restore_key_prefix:-}" ]] || return 43
+            [[ "${FAIL_S3_VERIFY:-0}" != 1 ]] || return 42
+            printf 'target:%s/%s\n' "$media_s3_restore_bucket" "$media_s3_restore_key_prefix" >> "$TEST_ROOT/events.log"
+            [[ "${FAIL_S3_RESTORE:-0}" != 1 ]] || return 44
+        fi
+        return 0
+    fi
+    command python3 "$@"
+}
+ynh_app_setting_set() {
+    local key= value= argument
+    for argument in "$@"; do
+        case "$argument" in
+            --key=*) key="${argument#*=}" ;;
+            --value=*) value="${argument#*=}" ;;
+        esac
+    done
+    printf '%s=%s\n' "$key" "$value" >> "$TEST_ROOT/settings.log"
+    if [[ "${FAIL_SETTING_KEY:-}" == "$key" ]]; then
+        unset FAIL_SETTING_KEY
+        return 45
+    fi
+}
 systemctl() {
     printf '%s\n' "$*" >> "$TEST_ROOT/systemctl.log"
+    printf 'systemctl:%s\n' "$*" >> "$TEST_ROOT/events.log"
     if [[ "${FAIL_CLEANUP_STOP:-0}" == 1 && -e "$TEST_ROOT/service-started" ]]; then
         return 22
     fi
@@ -58,7 +88,14 @@ find() {
     command find "$@"
 }
 ynh_restore() {
+    printf 'ynh_restore:%s\n' "$1" >> "$TEST_ROOT/events.log"
     if [[ "$1" == "$install_dir" ]]; then
+        if [[ -f "$YNH_APP_BACKUP_DIR$install_dir/config.toml" ]]; then
+            cp -- "$YNH_APP_BACKUP_DIR$install_dir/config.toml" "$install_dir/config.toml"
+        fi
+        if [[ -f "$YNH_APP_BACKUP_DIR$install_dir/overrides.toml" ]]; then
+            cp -- "$YNH_APP_BACKUP_DIR$install_dir/overrides.toml" "$install_dir/overrides.toml"
+        fi
         printf 'new binary\n' > "$install_dir/continuwuity"
         [[ "${FAIL_AT:-}" != install ]] || return 17
     elif [[ "$1" == "$data_dir" ]]; then
@@ -71,6 +108,17 @@ ynh_restore() {
 }
 continuwuity_dex_setup() { :; }
 continuwuity_configure() {
+    if [[ "${media_backend:-local}" == s3 ]]; then
+        printf '[global]\nmedia_backend = "s3"\n[global.media_s3]\nbucket = "%s"\nkey_prefix = "%s"\n' \
+            "${media_s3_restore_bucket:-$media_s3_bucket}" \
+            "${media_s3_restore_key_prefix:-$media_s3_key_prefix}" \
+            > "$install_dir/config.toml"
+    else
+        printf '[global]\n' > "$install_dir/config.toml"
+    fi
+    if [[ ! -f "$install_dir/overrides.toml" ]]; then
+        printf '# generated overrides\n' > "$install_dir/overrides.toml"
+    fi
     [[ "${FAIL_AT:-}" != config ]] || return 19
 }
 continuwuity_permissions() { :; }
@@ -102,17 +150,23 @@ class RestoreTransactionTests(unittest.TestCase):
         self.install = self.root / "install"
         self.install.mkdir()
         (self.install / "continuwuity").write_text("original binary\n")
+        self.archive_install = self.backup / self.install.relative_to("/")
+        self.archive_install.mkdir(parents=True)
+        (self.archive_install / "config.toml").write_text("[global]\n")
+        (self.archive_install / "overrides.toml").write_text("# archived overrides\n")
 
     def invoke(self, **variables):
         env = {
             **os.environ,
             "PACKAGE": str(PACKAGE),
+            "YNH_APP_BASEDIR": str(PACKAGE),
             "TEST_ROOT": str(self.root),
             "app": "continuwuity",
             "data_dir": str(self.data),
             "install_dir": str(self.install),
             "YNH_APP_BACKUP_DIR": str(self.backup),
             "auth_type": "password",
+            "media_backend": "local",
             **variables,
         }
         return subprocess.run(
@@ -125,6 +179,38 @@ class RestoreTransactionTests(unittest.TestCase):
             (self.data / "media" / "original.bin").read_text(), "original media\n"
         )
         self.assertFalse((self.data / "media" / "new.bin").exists())
+
+    def assert_original_database(self):
+        self.assertEqual((self.data / "CURRENT").read_text(), "original database\n")
+        self.assertFalse((self.data / "media" / "new.bin").exists())
+
+    def prepare_s3_archive(self):
+        (self.snapshot / "media" / "new.bin").unlink(missing_ok=True)
+        (self.archive_install / "config.toml").write_text(
+            '[global]\nmedia_backend = "s3"\n'
+            '[global.media_s3]\nkey_prefix = "continuwuity/media"\n'
+        )
+        (self.backup / "continuwuity-s3-media.json").write_text(
+            '{"schema_version":1,"generation":"20260101T000000Z-' + "0" * 32 + '"}\n'
+        )
+        (self.data / "media" / "original.bin").unlink(missing_ok=True)
+        (self.install / "config.toml").write_text(
+            '[global]\nmedia_backend = "s3"\n'
+            '[global.media_s3]\nkey_prefix = "continuwuity/media"\n'
+        )
+
+    @staticmethod
+    def s3_settings():
+        return {
+            "media_backend": "s3",
+            "media_s3_endpoint": "https://s3.example.test",
+            "media_s3_region": "us-east-1",
+            "media_s3_bucket": "live-media",
+            "media_s3_key_prefix": "continuwuity/media",
+            "media_s3_backup_bucket": "media-snapshots",
+            "media_s3_access_key_id": "access-secret-test",
+            "media_s3_secret_access_key": "private-secret-test",
+        }
 
     def test_old_daemon_is_stopped_before_renaming_database(self):
         script = (PACKAGE / "scripts/restore").read_text()
@@ -139,6 +225,112 @@ class RestoreTransactionTests(unittest.TestCase):
         self.assertEqual((self.data / "CURRENT").read_text(), "restored database\n")
         self.assertTrue((self.data / "media" / "new.bin").is_file())
         self.assertFalse((self.data / "media" / "original.bin").exists())
+        self.assertFalse(list(self.data.parent.glob(".continuwuity-restore-rollback.*")))
+
+    def test_s3_restore_copies_to_new_prefix_before_switch_and_persists_after_ready(self):
+        self.prepare_s3_archive()
+        settings = self.s3_settings()
+        settings["media_backend"] = "local"
+        result = self.invoke(**settings)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = (self.root / "events.log").read_text().splitlines()
+        self.assertEqual(events[0], "s3:restore")
+        self.assertTrue(events[1].startswith("target:live-media/.ynh-restore-"))
+        self.assertLess(events.index("s3:restore"), events.index(f"ynh_restore:{self.install}"))
+        config = (self.install / "config.toml").read_text()
+        self.assertIn('media_backend = "s3"', config)
+        target_prefix = next(
+            line.split("=", 1)[1]
+            for line in (self.root / "settings.log").read_text().splitlines()
+            if line.startswith("media_s3_key_prefix=")
+        )
+        self.assertTrue(target_prefix.startswith(".ynh-restore-"))
+        self.assertIn(f'key_prefix = "{target_prefix}"', config)
+        self.assertIn(f"media_s3_key_prefix={target_prefix}", (self.root / "settings.log").read_text())
+        self.assertEqual((self.data / "CURRENT").read_text(), "restored database\n")
+        self.assertFalse(list(self.data.parent.glob(".continuwuity-restore-rollback.*")))
+
+    def test_missing_s3_manifest_fails_before_local_mutation(self):
+        self.prepare_s3_archive()
+        (self.backup / "continuwuity-s3-media.json").unlink()
+        result = self.invoke(**self.s3_settings())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no matching media generation manifest", result.stderr)
+        self.assert_original_database()
+        self.assertFalse((self.root / "systemctl.log").exists())
+
+    def test_unsafe_current_config_fails_before_remote_restore(self):
+        self.prepare_s3_archive()
+        config = self.install / "config.toml"
+        config.unlink()
+        external = self.root / "external-config.toml"
+        external.write_text("old config\n")
+        config.symlink_to(external)
+        result = self.invoke(**self.s3_settings())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing Continuwuity config is not a regular file", result.stderr)
+        self.assert_original_database()
+        self.assertTrue(config.is_symlink())
+        self.assertEqual(external.read_text(), "old config\n")
+        self.assertFalse((self.root / "events.log").exists())
+        self.assertFalse((self.root / "systemctl.log").exists())
+
+    def test_tampered_s3_snapshot_fails_before_local_mutation(self):
+        self.prepare_s3_archive()
+        old_config = (self.install / "config.toml").read_text()
+        result = self.invoke(FAIL_S3_VERIFY="1", **self.s3_settings())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not restore and verify the S3 media generation", result.stderr)
+        self.assert_original_database()
+        self.assertEqual((self.install / "config.toml").read_text(), old_config)
+        self.assertFalse((self.root / "systemctl.log").exists())
+
+    def test_s3_copy_failure_leaves_current_data_and_config_untouched(self):
+        self.prepare_s3_archive()
+        old_config = (self.install / "config.toml").read_text()
+        result = self.invoke(FAIL_S3_RESTORE="1", **self.s3_settings())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("empty target prefix", result.stderr)
+        self.assert_original_database()
+        self.assertEqual((self.install / "config.toml").read_text(), old_config)
+        self.assertFalse((self.root / "systemctl.log").exists())
+
+    def test_failed_s3_start_restores_old_database_and_config_and_keeps_remote_prefix(self):
+        self.prepare_s3_archive()
+        old_config = (self.install / "config.toml").read_text()
+        result = self.invoke(FAIL_AT="ready", **self.s3_settings())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Original data recovered", result.stderr)
+        self.assertIn("was left untouched and may be an orphan", result.stderr)
+        self.assertEqual((self.data / "CURRENT").read_text(), "original database\n")
+        self.assertEqual((self.install / "config.toml").read_text(), old_config)
+        self.assertFalse(list(self.data.parent.glob(".continuwuity-restore-rollback.*")))
+
+    def test_failed_s3_cleanup_stop_preserves_both_local_trees_and_marks_prefix_in_use(self):
+        self.prepare_s3_archive()
+        old_config = (self.install / "config.toml").read_text()
+        result = self.invoke(
+            FAIL_AT="ready", FAIL_CLEANUP_STOP="1", **self.s3_settings()
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not stop continuwuity.service", result.stderr)
+        self.assertIn("may still be in use by continuwuity.service; do not delete it", result.stderr)
+        rollback_dirs = list(self.data.parent.glob(".continuwuity-restore-rollback.*"))
+        self.assertEqual(len(rollback_dirs), 1)
+        self.assertEqual((rollback_dirs[0] / "original" / "CURRENT").read_text(), "original database\n")
+        self.assertEqual((rollback_dirs[0] / "original-config.toml").read_text(), old_config)
+        self.assertEqual((self.data / "CURRENT").read_text(), "restored database\n")
+        self.assertNotEqual((self.install / "config.toml").read_text(), old_config)
+
+    def test_failed_s3_setting_persist_rolls_back_prefix_and_generated_config(self):
+        self.prepare_s3_archive()
+        old_config = (self.install / "config.toml").read_text()
+        result = self.invoke(FAIL_SETTING_KEY="media_s3_key_prefix", **self.s3_settings())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Original data recovered", result.stderr)
+        self.assertEqual((self.data / "CURRENT").read_text(), "original database\n")
+        self.assertEqual((self.install / "config.toml").read_text(), old_config)
+        self.assertIn("media_s3_key_prefix=continuwuity/media", (self.root / "settings.log").read_text())
         self.assertFalse(list(self.data.parent.glob(".continuwuity-restore-rollback.*")))
 
     def test_failures_after_swap_restore_original_database_and_media(self):
@@ -156,11 +348,41 @@ class RestoreTransactionTests(unittest.TestCase):
                 self.assertIn("Original data recovered", result.stderr)
                 self.assertFalse(list(self.data.parent.glob(".continuwuity-restore-rollback.*")))
 
+    def test_failed_local_restore_restores_preexisting_config_and_overrides(self):
+        config = self.install / "config.toml"
+        overrides = self.install / "overrides.toml"
+        config.write_text("# previous live config\n")
+        overrides.write_text("# previous live overrides\n")
+
+        result = self.invoke(FAIL_AT="ready")
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assert_original_database()
+        self.assertEqual(config.read_text(), "# previous live config\n")
+        self.assertEqual(overrides.read_text(), "# previous live overrides\n")
+        self.assertFalse(list(self.data.parent.glob(".continuwuity-restore-rollback.*")))
+
+    def test_failed_local_restore_removes_config_and_overrides_that_were_absent(self):
+        config = self.install / "config.toml"
+        overrides = self.install / "overrides.toml"
+        config.unlink(missing_ok=True)
+        overrides.unlink(missing_ok=True)
+
+        result = self.invoke(FAIL_AT="ready")
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assert_original_database()
+        self.assertFalse(config.exists())
+        self.assertFalse(config.is_symlink())
+        self.assertFalse(overrides.exists())
+        self.assertFalse(overrides.is_symlink())
+        self.assertFalse(list(self.data.parent.glob(".continuwuity-restore-rollback.*")))
+
     def test_failed_service_stop_during_rollback_retains_original_outside_live_data(self):
         result = self.invoke(FAIL_AT="ready", FAIL_CLEANUP_STOP="1")
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn("Could not stop continuwuity.service", result.stderr)
-        self.assertIn("Automatic data rollback failed", result.stderr)
+        self.assertIn("Automatic rollback failed", result.stderr)
 
         rollback_dirs = list(self.data.parent.glob(".continuwuity-restore-rollback.*"))
         self.assertEqual(len(rollback_dirs), 1)
@@ -179,7 +401,7 @@ class RestoreTransactionTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn("Could not stop continuwuity.service", result.stderr)
-        self.assertIn("Automatic data rollback failed", result.stderr)
+        self.assertIn("Automatic rollback failed", result.stderr)
 
         rollback_dirs = list(self.data.parent.glob(".continuwuity-restore-rollback.*"))
         self.assertEqual(len(rollback_dirs), 1)

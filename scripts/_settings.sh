@@ -3,6 +3,34 @@
 # Settings validation, configuration rendering and credential files.
 # Loaded by _common.sh; YunoHost supplies settings and helpers at call time.
 
+continuwuity_initialize_s3_credentials() {
+    # Password install inputs are excluded from YunoHost's automatic settings
+    # write. Initialize absent keys explicitly, but never replace stored values
+    # with empty environment variables during an upgrade.
+    set +x
+    local credential_key stored_value result
+    for credential_key in media_s3_access_key_id media_s3_secret_access_key; do
+        # The sentinel distinguishes a present empty value from an absent key.
+        stored_value="$(
+            if ynh_app_setting_get --key="$credential_key"; then
+                printf '.0'
+            else
+                result=$?
+                printf '.%s' "$result"
+            fi
+        )"
+        set +x
+        case "$stored_value" in
+            .0)
+                ynh_app_setting_set --key="$credential_key" --value="${!credential_key:-}"
+                set +x
+                ;;
+            *.0) ;;
+            *) ynh_die "Cannot inspect stored S3 credential settings; refusing to overwrite them." ;;
+        esac
+    done
+}
+
 continuwuity_defaults() {
     # Some YunoHost helpers re-enable xtrace; keep secret settings out of logs.
     set +x
@@ -20,6 +48,20 @@ continuwuity_defaults() {
     ynh_app_setting_set_default --key=turn_secret --value=""
     ynh_app_setting_set_default --key=turn_ttl --value=86400
     ynh_app_setting_set_default --key=rtc_service_url --value=""
+    ynh_app_setting_set_default --key=media_backend --value="${media_backend:-local}"
+    ynh_app_setting_set_default --key=media_s3_endpoint --value="${media_s3_endpoint:-}"
+    ynh_app_setting_set_default --key=media_s3_bucket --value="${media_s3_bucket:-}"
+    ynh_app_setting_set_default --key=media_s3_backup_bucket --value="${media_s3_backup_bucket:-}"
+    ynh_app_setting_set_default --key=media_s3_region --value="${media_s3_region:-us-east-1}"
+    # Give each YunoHost app instance a disjoint object prefix by default.
+    # A supplied nonempty prefix is preserved and validated below.
+    if [[ -z "${media_s3_key_prefix:-}" ]]; then
+        media_s3_key_prefix="$app/media"
+        ynh_app_setting_set --key=media_s3_key_prefix --value="$media_s3_key_prefix"
+    else
+        ynh_app_setting_set_default --key=media_s3_key_prefix --value="$media_s3_key_prefix"
+    fi
+    continuwuity_initialize_s3_credentials
     if [[ -z "${registration_token:-}" ]]; then
         registration_token="$(ynh_string_random --length=48)"
         ynh_app_setting_set --key=registration_token --value="$registration_token"
@@ -52,6 +94,16 @@ continuwuity_validate_settings() {
     [[ -z "$turn_uris" || -n "$turn_secret" ]] || ynh_die "TURN URIs require a shared TURN secret."
     [[ -z "$rtc_service_url" || "$rtc_service_url" =~ ^https://[^[:space:]\"\\]+$ ]] \
         || ynh_die "The MatrixRTC authorization service must use an HTTPS URL."
+    media_backend="${media_backend:-local}"
+    media_s3_endpoint="${media_s3_endpoint:-}"
+    media_s3_bucket="${media_s3_bucket:-}"
+    media_s3_backup_bucket="${media_s3_backup_bucket:-}"
+    media_s3_region="${media_s3_region:-us-east-1}"
+    media_s3_key_prefix="${media_s3_key_prefix:-}"
+    media_s3_access_key_id="${media_s3_access_key_id:-}"
+    media_s3_secret_access_key="${media_s3_secret_access_key:-}"
+    media_s3_restore_bucket="${media_s3_restore_bucket:-}"
+    media_s3_restore_key_prefix="${media_s3_restore_key_prefix:-}"
     turn_uris_json="$(export turn_uris; python3 - <<'PY'
 import json, os, re
 uris = [uri.strip() for uri in os.environ['turn_uris'].split(',') if uri.strip()]
@@ -62,7 +114,13 @@ PY
     )" || ynh_die "Invalid TURN URI list."
     # Reject conflicting Matrix identities and overrides that would break the
     # package's networking or complete-data backup guarantees.
-    (export app server_name install_dir; python3 "$YNH_APP_BASEDIR/conf/validate_settings.py")
+    (
+        export app server_name install_dir media_backend
+        export media_s3_endpoint media_s3_bucket media_s3_backup_bucket media_s3_region
+        export media_s3_key_prefix media_s3_access_key_id media_s3_secret_access_key
+        export media_s3_restore_bucket media_s3_restore_key_prefix
+        python3 "$YNH_APP_BASEDIR/conf/validate_settings.py"
+    )
     dex_service=""
     if [[ "$auth_type" == dex ]]; then
         [[ "$dex_app" =~ ^dex(__[0-9]+)?$ ]] || ynh_die "Select an installed Dex app."
@@ -93,6 +151,16 @@ continuwuity_write_config() {
     set +x
     continuwuity_validate_settings
     continuwuity_check_smtp
+    export media_backend media_s3_endpoint media_s3_bucket media_s3_backup_bucket
+    export media_s3_region media_s3_key_prefix media_s3_access_key_id media_s3_secret_access_key
+    export media_s3_restore_bucket media_s3_restore_key_prefix
+    media_s3_config_bucket="$media_s3_bucket"
+    media_s3_config_key_prefix="$media_s3_key_prefix"
+    if [[ -n "$media_s3_restore_bucket" || -n "$media_s3_restore_key_prefix" ]]; then
+        media_s3_config_bucket="$media_s3_restore_bucket"
+        media_s3_config_key_prefix="$media_s3_restore_key_prefix"
+    fi
+    export media_s3_config_bucket media_s3_config_key_prefix
     ynh_config_add --jinja --template=config.toml --destination="$install_dir/config.toml"
     if [[ ! -f "$install_dir/overrides.toml" ]]; then
         cp "$YNH_APP_BASEDIR/conf/overrides.toml" "$install_dir/overrides.toml"

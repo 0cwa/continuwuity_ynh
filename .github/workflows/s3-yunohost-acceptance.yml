@@ -1,0 +1,185 @@
+name: Native S3 YunoHost backup and restore
+
+on:
+  # PR synchronize events already cover draft-branch pushes; avoid running
+  # the same heavyweight guest acceptance twice for one commit.
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/s3-yunohost-acceptance.yml'
+      - 'conf/**'
+      - 'scripts/**'
+      - 'manifest.toml'
+      - 'tests/s3_yunohost_acceptance.py'
+      - 'tests/test_s3_acceptance_manifest.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup_restore:
+    name: YunoHost backup and restore (${{ matrix.arch }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            seaweed_sha256: 8b538c22d47d0c3fb6792adaa6b0c735a967401270a53427d5a476dcaca9b7ae
+        # The published bookworm-stable/appci Incus image is amd64-only. The
+        # arm64 candidate has separate binary/S3 smoke coverage, not this full
+        # YunoHost guest lifecycle.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      INSTANCE: continuwuity-s3-acceptance
+      EXPECTED_SOURCE_COMMIT: 1c0abdccc4e47d63bd828f59da8a2f82396c265c
+      CANDIDATE_RELEASE_TAG: s3-candidate-2026-11-16
+      CANDIDATE_SOURCE_REPOSITORY: 0cwa/continuwuity
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: app
+
+      - name: Validate the candidate source pin in the package manifest
+        id: candidate
+        env:
+          CANDIDATE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          python3 - "$GITHUB_WORKSPACE/app/manifest.toml" "$CANDIDATE_ARCH" "$GITHUB_OUTPUT" <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+          import tomllib
+
+          manifest_path, arch, output_path = sys.argv[1:]
+          release_tag = os.environ["CANDIDATE_RELEASE_TAG"]
+          repository = os.environ["CANDIDATE_SOURCE_REPOSITORY"]
+          filename = f"conduwuit-linux-static-{arch}"
+          expected_url = (
+              f"https://github.com/{repository}/releases/download/{release_tag}/{filename}"
+          )
+          with Path(manifest_path).open("rb") as manifest_file:
+              source = tomllib.load(manifest_file)["resources"]["sources"]["main"][arch]
+          if source.get("url") != expected_url:
+              raise SystemExit(
+                  f"::error::The {arch} package source must pin the published candidate release asset."
+              )
+          digest = source.get("sha256", "")
+          if not re.fullmatch(r"[0-9a-f]{64}", digest):
+              raise SystemExit(f"::error::The {arch} package source has no valid SHA256 pin.")
+          with Path(output_path).open("a", encoding="utf-8") as output:
+              output.write(f"asset_name={filename}\n")
+              output.write(f"asset_url={expected_url}\n")
+              output.write(f"asset_sha256={digest}\n")
+          PY
+
+      - name: Download and verify the pinned candidate release assets
+        env:
+          ASSET_NAME: ${{ steps.candidate.outputs.asset_name }}
+          ASSET_URL: ${{ steps.candidate.outputs.asset_url }}
+          ASSET_SHA256: ${{ steps.candidate.outputs.asset_sha256 }}
+        run: |
+          set -eu
+          mkdir -p candidate
+          curl --fail --location --silent --show-error --retry 3 "$ASSET_URL" \
+            --output "candidate/$ASSET_NAME"
+          curl --fail --location --silent --show-error --retry 3 "$ASSET_URL.sha256" \
+            --output "candidate/$ASSET_NAME.sha256"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/$CANDIDATE_SOURCE_REPOSITORY/releases/download/$CANDIDATE_RELEASE_TAG/source-commit.txt" \
+            --output candidate/source-commit.txt
+          curl --fail --location --silent --show-error --retry 3 \
+            --header 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$CANDIDATE_SOURCE_REPOSITORY/commits/$CANDIDATE_RELEASE_TAG" \
+            --output "$RUNNER_TEMP/candidate-source-ref.json"
+          python3 - "$RUNNER_TEMP/candidate-source-ref.json" candidate/source-commit.txt \
+            "candidate/$ASSET_NAME.sha256" "$EXPECTED_SOURCE_COMMIT" "$ASSET_SHA256" "$ASSET_NAME" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          ref_path, provenance_path, checksum_path, expected_commit, expected_sha, filename = sys.argv[1:]
+          source_ref = json.loads(Path(ref_path).read_text(encoding="utf-8"))
+          release_commit = Path(provenance_path).read_text(encoding="utf-8").strip()
+          if source_ref.get("sha") != expected_commit or release_commit != expected_commit:
+              raise SystemExit("::error::Candidate release source provenance does not match the pinned source commit.")
+          checksum = Path(checksum_path).read_text(encoding="utf-8").split()
+          if len(checksum) != 2 or checksum[0] != expected_sha or checksum[1] != filename:
+              raise SystemExit("::error::Candidate release checksum sidecar does not match the package manifest pin.")
+          if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+              raise SystemExit("::error::Package manifest SHA256 pin is malformed.")
+          PY
+          (cd candidate && sha256sum --check "$ASSET_NAME.sha256")
+
+      - name: Download pinned SeaweedFS test server
+        env:
+          SEAWEED_SHA256: ${{ matrix.seaweed_sha256 }}
+        run: |
+          set -eu
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/seaweedfs/seaweedfs/releases/download/4.52/linux_${{ matrix.arch }}.tar.gz" \
+            --output "$RUNNER_TEMP/seaweed.tar.gz"
+          printf '%s  %s\n' "$SEAWEED_SHA256" "$RUNNER_TEMP/seaweed.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/seaweed.tar.gz" -C "$RUNNER_TEMP" weed
+
+      - name: Install and initialise the disposable Incus host
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends --yes incus dnsmasq-base
+          sudo usermod -aG incus-admin "$USER"
+          sudo incus admin init --minimal
+          sg incus-admin -c "incus remote add yunohost https://repo.yunohost.org/incus --protocol simplestreams --public"
+          # The remote publishes yunohost/<dist>-<branch>/appci, while package_check
+          # expects the local alias to use hyphens.
+          sg incus-admin -c "incus image copy yunohost:yunohost/bookworm-stable/appci local: --alias yunohost-bookworm-stable-appci"
+          # Docker on hosted runners drops forwarded traffic used by Incus guests.
+          sudo iptables -I DOCKER-USER -j ACCEPT || true
+          sudo ip6tables -I DOCKER-USER -j ACCEPT || true
+
+      - name: Launch guest and run real YunoHost lifecycle acceptance
+        run: |
+          set -eu
+          tar -C "$GITHUB_WORKSPACE/app" --exclude=.git -cf "$RUNNER_TEMP/continuwuity-package.tar" .
+          sg incus-admin -c "incus launch local:yunohost-bookworm-stable-appci '$INSTANCE'"
+          sg incus-admin -c "incus exec '$INSTANCE' -- timeout 120 sh -c 'until systemctl is-active --quiet nginx; do sleep 2; done'"
+          sg incus-admin -c "incus exec '$INSTANCE' -- mkdir -p /opt/continuwuity-artifacts"
+          sg incus-admin -c "incus file push '$RUNNER_TEMP/continuwuity-package.tar' '$INSTANCE/tmp/continuwuity-package.tar'"
+          sg incus-admin -c "incus exec '$INSTANCE' -- mkdir -p /opt/app"
+          sg incus-admin -c "incus exec '$INSTANCE' -- tar -xf /tmp/continuwuity-package.tar -C /opt/app"
+          sg incus-admin -c "incus file push '$GITHUB_WORKSPACE/candidate/conduwuit-linux-static-${{ matrix.arch }}' '$INSTANCE/opt/continuwuity-artifacts/'"
+          sg incus-admin -c "incus file push '$RUNNER_TEMP/weed' '$INSTANCE/opt/continuwuity-artifacts/weed'"
+          sg incus-admin -c "incus exec '$INSTANCE' -- env ACCEPTANCE_ARCH='${{ matrix.arch }}' ACCEPTANCE_PACKAGE=/opt/app ACCEPTANCE_ARTIFACTS=/opt/continuwuity-artifacts python3 /opt/app/tests/s3_yunohost_acceptance.py"
+
+      - name: Show the local object server log on failure
+        if: failure()
+        run: |
+          redact_fixture() {
+            sed -E \
+              -e 's#(https?|s3)://[^[:space:]"<>]+#[redacted URL]#g' \
+              -e 's#(acceptance-live|acceptance-snapshots|continuwuity/media|continuwuity-generations)(/[^[:space:]"<>]*)?#[redacted S3 location]#g' \
+              -e 's/(acceptance-key|acceptance-secret|Test-Admin-Password-8742|Matrix-Test-Password-8347)/[redacted]/g'
+          }
+          sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /opt/continuwuity-s3-acceptance/seaweed.log" \
+            | redact_fixture || true
+          sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /var/log/nginx/continuwuity-s3-acceptance-access.log" \
+            | redact_fixture || true
+          sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /var/log/nginx/continuwuity-s3-acceptance-error.log" \
+            | redact_fixture || true
+          sg incus-admin -c "incus exec '$INSTANCE' -- journalctl -u continuwuity.service --no-pager -n 160" \
+            | grep -Ei 's3|media|error|warn' \
+            | redact_fixture || true
+
+      - name: Remove the disposable Incus guest
+        if: always()
+        run: |
+          if sg incus-admin -c "incus info '$INSTANCE'" >/dev/null 2>&1; then
+            sg incus-admin -c "incus delete --force '$INSTANCE'"
+          fi

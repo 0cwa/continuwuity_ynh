@@ -27,6 +27,13 @@ def render_config(**overrides):
         "turn_uris_json": "[]",
         "turn_ttl": 86400,
         "rtc_service_url": "",
+        "media_backend": "local",
+        "media_s3_config_bucket": "",
+        "media_s3_config_key_prefix": "",
+        "media_s3_endpoint": "",
+        "media_s3_region": "us-east-1",
+        "media_s3_access_key_id": "",
+        "media_s3_secret_access_key": "",
     }
     values.update(overrides)
     environment = Environment(undefined=StrictUndefined)

@@ -21,9 +21,85 @@ continuwuity_validate_rocksdb_marker() {
         || ynh_die "$error_message"
 }
 
-# Live media on bind/FUSE/object-store mounts is not supported by this package:
+continuwuity_s3_media_enabled() {
+    [[ "${media_backend:-local}" == s3 ]]
+}
+
+continuwuity_s3_manifest_path() {
+    printf '%s/continuwuity-s3-media.json' "${YNH_APP_BACKUP_DIR:?}"
+}
+
+continuwuity_archive_media_backend() {
+    local archived_config="${YNH_APP_BACKUP_DIR:?}${install_dir}/config.toml"
+    [[ -f "$archived_config" && ! -L "$archived_config" ]] \
+        || ynh_die "The archive has no regular Continuwuity config; refusing to guess its media backend."
+    python3 - "$archived_config" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+try:
+    with Path(sys.argv[1]).open("rb") as stream:
+        config = tomllib.load(stream)
+except (OSError, tomllib.TOMLDecodeError):
+    raise SystemExit("The archived Continuwuity config is invalid; refusing to restore.") from None
+
+backend = config.get("global", {}).get("media_backend", "local")
+if backend not in ("local", "s3"):
+    raise SystemExit("The archived Continuwuity config names an unsupported media backend.")
+print(backend)
+PY
+}
+
+continuwuity_run_s3_snapshot_helper() {
+    local operation="$1" manifest="$2"
+    local helper="${YNH_APP_BASEDIR:?}/conf/s3_snapshot.py"
+    # YunoHost lifecycle scripts may run with xtrace enabled. Do not expose
+    # S3 credentials through the shell trace or process argument list.
+    (
+        set +x
+        export media_s3_endpoint="${media_s3_endpoint:-}"
+        export media_s3_region="${media_s3_region:-}"
+        export media_s3_bucket="${media_s3_bucket:-}"
+        export media_s3_key_prefix="${media_s3_key_prefix:-}"
+        export media_s3_access_key_id="${media_s3_access_key_id:-}"
+        export media_s3_secret_access_key="${media_s3_secret_access_key:-}"
+        export media_s3_backup_bucket="${media_s3_backup_bucket:-}"
+        export media_s3_restore_bucket="${media_s3_restore_bucket:-}"
+        export media_s3_restore_key_prefix="${media_s3_restore_key_prefix:-}"
+        python3 "$helper" "$operation" --manifest "$manifest"
+    )
+}
+
+continuwuity_validate_s3_media_data() {
+    local root="${1:-$data_dir}" scope="${2:-live}" media first_entry
+    media="$root/media"
+    if [[ "$scope" == live ]]; then
+        [[ -n "${media_s3_key_prefix:-}" ]] \
+            || ynh_die "S3 media backups require a nonempty live key prefix."
+        [[ -n "${media_s3_region:-}" \
+            && -n "${media_s3_bucket:-}" \
+            && -n "${media_s3_backup_bucket:-}" \
+            && -n "${media_s3_access_key_id:-}" \
+            && -n "${media_s3_secret_access_key:-}" ]] \
+            || ynh_die "S3 media backups require a region, live and backup buckets, and a static credential pair."
+    fi
+    [[ ! -L "$media" ]] \
+        || ynh_die "The local media path is a symlink while S3 media storage is enabled."
+    if [[ -e "$media" ]]; then
+        [[ -d "$media" ]] \
+            || ynh_die "The local media path is not a directory while S3 media storage is enabled."
+        first_entry="$(find "$media" -mindepth 1 -maxdepth 1 -print -quit)" \
+            || ynh_die "Cannot inspect local media while S3 media storage is enabled."
+        [[ -z "$first_entry" ]] \
+            || ynh_die "Local media files exist while S3 media storage is enabled; refusing a database-only backup."
+    fi
+}
+
+# The local-filesystem backend must not use bind/FUSE/object-store mounts:
 # YunoHost snapshots would otherwise copy remote objects as local files and a
-# failed/unmounted mount could silently produce an incomplete archive.
+# failed/unmounted mount could silently produce an incomplete archive. Native
+# S3 media uses the separate generation/manifest path below.
 continuwuity_validate_media_tree() {
     local media="$1" scope="$2" media_symlink
     if [[ "$scope" == archived ]]; then
@@ -64,6 +140,19 @@ continuwuity_require_local_media() {
     continuwuity_validate_media_tree "$data_dir/media" live
 }
 
+continuwuity_require_local_data_mounts() {
+    local mounts target
+    mounts="$(findmnt --kernel --raw --noheadings --output TARGET)" \
+        || ynh_die "Cannot inspect data mounts; refusing an unsafe backup/restore."
+    while IFS= read -r target; do
+        case "$target" in
+            "$data_dir"|"$data_dir/"*)
+                ynh_die "Mounted data directories are not supported for YunoHost backup/restore. Use a local data directory."
+                ;;
+        esac
+    done <<< "$mounts"
+}
+
 continuwuity_check_snapshot_space() {
     # Preflight before stopping the database. This is a minimum staging
     # requirement, not a promise about the later compressed YunoHost archive.
@@ -83,7 +172,7 @@ _continuwuity_check_space() {
     local bytes free reserve usage capacity
     # Parsing a pipeline masks du/df errors if awk succeeds after partial output.
     usage="$(du --summarize --block-size=1 -- "$1")" \
-        || ynh_die "Unable to measure database and media; refusing incomplete operation."
+        || ynh_die "Unable to measure local Continuwuity data; refusing incomplete operation."
     bytes="${usage%%[[:space:]]*}"
     capacity="$(df --portability --block-size=1 -- "$2")" \
         || ynh_die "Unable to check free space."
@@ -111,7 +200,17 @@ continuwuity_snapshot_data() (
     [[ ! -e "$snapshot" && ! -L "$snapshot" ]] \
         || ynh_die "A data snapshot already exists at $snapshot; refusing to overwrite it."
 
-    continuwuity_require_local_media
+    local s3_media=0 manifest=""
+    if continuwuity_s3_media_enabled; then
+        s3_media=1
+        manifest="$(continuwuity_s3_manifest_path)"
+        [[ ! -e "$manifest" && ! -L "$manifest" ]] \
+            || ynh_die "An S3 media manifest already exists in the backup workspace; refusing to overwrite it."
+        continuwuity_require_local_data_mounts
+        continuwuity_validate_s3_media_data "$data_dir" live
+    else
+        continuwuity_require_local_media
+    fi
     continuwuity_check_snapshot_space
 
     initial_state="$(systemctl show --property=ActiveState --value "$app.service")"
@@ -147,6 +246,7 @@ continuwuity_snapshot_data() (
     # Stop even an activating/failed unit: the helper intentionally skips units
     # that aren't active, which is too weak a guarantee for a database snapshot.
     systemctl stop "$app.service"
+    printf '%s\n' "Backup stage: service stopped; copying local database snapshot."
     snapshot_parent="$(dirname -- "$snapshot")"
     mkdir -p -- "$snapshot_parent"
     staging_dir="$(mktemp -d --tmpdir="$snapshot_parent" ".${app}.snapshot.XXXXXX")"
@@ -156,6 +256,13 @@ continuwuity_snapshot_data() (
         || ynh_die "The Continuwuity data snapshot copy is incomplete."
     continuwuity_validate_rocksdb_marker "$staged_data" \
         "The copied data snapshot lacks a valid RocksDB CURRENT marker; refusing an incomplete backup."
+    if [[ "$s3_media" -eq 1 ]]; then
+        printf '%s\n' "Backup stage: local database snapshot is ready; verifying and copying S3 media."
+        continuwuity_run_s3_snapshot_helper create "$manifest" \
+            || ynh_die "Could not create and verify the remote S3 media snapshot. The database was not published as a backup."
+        [[ -f "$manifest" && -s "$manifest" && ! -L "$manifest" ]] \
+            || ynh_die "The S3 snapshot helper did not publish a valid manifest; refusing an incomplete backup."
+    fi
     # Publish the complete directory with one same-filesystem rename. The
     # archive core consumes only the canonical path after this script exits.
     # Whether mv -n fails when it skips varies across coreutils versions; the

@@ -15,6 +15,19 @@ source "$PACKAGE/scripts/_backup.sh"
 
 ynh_die() { printf '%s\n' "$*" >&2; exit 1; }
 ynh_print_warn() { printf '%s\n' "$*" >&2; }
+python3() {
+    if [[ "${1:-}" == "$PACKAGE/conf/s3_snapshot.py" ]]; then
+        local operation="$2" manifest="${4:-}"
+        [[ -n "${media_s3_secret_access_key:-}" && -n "${media_s3_access_key_id:-}" ]] || return 40
+        [[ "$*" != *"$media_s3_secret_access_key"* && "$*" != *"$media_s3_access_key_id"* ]] || return 39
+        printf 's3:%s:%s\n' "$operation" "$(cat "$STATE_FILE")" >> "$EVENTS_FILE"
+        [[ "$(cat "$STATE_FILE")" == inactive ]] || return 41
+        [[ "${FAIL_S3_HELPER:-0}" != 1 ]] || return 28
+        printf '{"schema_version":1}\n' > "$manifest"
+        return 0
+    fi
+    command python3 "$@"
+}
 systemctl() {
     case "$1" in
         show) cat "$STATE_FILE" ;;
@@ -130,6 +143,7 @@ class SnapshotTests(unittest.TestCase):
         env = dict(os.environ)
         env.update(
             PACKAGE=str(PACKAGE),
+            YNH_APP_BASEDIR=str(PACKAGE),
             app="continuwuity",
             data_dir=str(self.data),
             YNH_APP_BACKUP_DIR=str(self.backup),
@@ -344,6 +358,70 @@ class SnapshotTests(unittest.TestCase):
             if path.name.startswith(".continuwuity.snapshot.")
         ]
         self.assertEqual(staging_paths, [])
+
+    def test_s3_backup_matches_stopped_database_with_verified_manifest(self):
+        (self.data / "media" / "example").unlink()
+        result = self.run_snapshot(
+            media_backend="s3",
+            media_s3_key_prefix="continuwuity/media",
+            media_s3_endpoint="https://s3.example.test",
+            media_s3_region="us-east-1",
+            media_s3_bucket="live-media",
+            media_s3_backup_bucket="media-snapshots",
+            media_s3_access_key_id="access-secret-test",
+            media_s3_secret_access_key="private-secret-test",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.event_lines(),
+            ["stop", "copy:inactive", "s3:create:inactive", "start", "parent-exit"],
+        )
+        self.assertTrue((self.snapshot / "CURRENT").is_file())
+        manifest = self.backup / "continuwuity-s3-media.json"
+        self.assertEqual(manifest.read_text(), '{"schema_version":1}\n')
+
+    def test_s3_snapshot_failure_restarts_service_without_publishing_database(self):
+        (self.data / "media" / "example").unlink()
+        result = self.run_snapshot(
+            FAIL_S3_HELPER="1",
+            media_backend="s3",
+            media_s3_key_prefix="continuwuity/media",
+            media_s3_endpoint="https://s3.example.test",
+            media_s3_region="us-east-1",
+            media_s3_bucket="live-media",
+            media_s3_backup_bucket="media-snapshots",
+            media_s3_access_key_id="access-secret-test",
+            media_s3_secret_access_key="private-secret-test",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not create and verify the remote S3 media snapshot", result.stderr)
+        self.assertEqual(
+            self.event_lines(), ["stop", "copy:inactive", "s3:create:inactive", "start", "parent-exit"]
+        )
+        self.assertFalse(self.snapshot.exists())
+        self.assertFalse((self.backup / "continuwuity-s3-media.json").exists())
+
+    def test_s3_backup_refuses_local_media_and_empty_prefix_before_stopping(self):
+        result = self.run_snapshot(
+            media_backend="s3",
+            media_s3_key_prefix="continuwuity/media",
+            media_s3_region="us-east-1",
+            media_s3_bucket="live-media",
+            media_s3_backup_bucket="media-snapshots",
+            media_s3_access_key_id="access-secret-test",
+            media_s3_secret_access_key="private-secret-test",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Local media files exist", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
+        self.assertFalse(self.snapshot.exists())
+
+        (self.data / "media" / "example").unlink()
+        self.events.write_text("")
+        result = self.run_snapshot(media_backend="s3", media_s3_key_prefix="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nonempty live key prefix", result.stderr)
+        self.assertEqual(self.event_lines(), ["parent-exit"])
 
 
 if __name__ == "__main__":

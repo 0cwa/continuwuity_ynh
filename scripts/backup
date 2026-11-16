@@ -10,11 +10,16 @@ source ../settings/scripts/_backup.sh
 set +x
 
 ynh_print_info "Creating a consistent backup of Continuwuity..."
-ynh_print_info "All database and media files are included, including before upgrades. The service is stopped only while the snapshot is copied; allow free disk space for both the complete snapshot and the resulting archive."
+if continuwuity_s3_media_enabled; then
+    ynh_print_info "The database is archived locally and media is copied to a matching immutable S3 generation. The service remains stopped until both snapshots are verified."
+else
+    ynh_print_info "All database and media files are included, including before upgrades. The service is stopped only while the snapshot is copied; allow free disk space for both the complete snapshot and the resulting archive."
+fi
 
-# Always include the database and media. A RocksDB migration may make the old
-# binary unable to read retained data, so a code-only safety backup is unsafe.
-# BACKUP_CORE_ONLY and do_not_backup_data intentionally do not omit this copy.
+# Always include the database and its matching media snapshot. A RocksDB
+# migration may make the old binary unable to read retained data, so a code-
+# only safety backup is unsafe. BACKUP_CORE_ONLY and do_not_backup_data
+# intentionally do not omit this copy.
 continuwuity_snapshot_data
 
 ynh_backup "$install_dir"

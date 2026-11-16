@@ -21,7 +21,7 @@ from package_helpers import PACKAGE, render_config
 from upstream_helpers import Homeserver, SmtpFixture, check, select_binary
 
 
-def run_smoke(binary, temporary, smtp_port):
+def run_smoke(binary, temporary, smtp_port, expected_media_backend="local"):
     install = temporary / "install"
     install.mkdir()
     data = temporary / "data"
@@ -86,6 +86,19 @@ def run_smoke(binary, temporary, smtp_port):
         check(status == 200, "Sending a room event failed.")
         status, media = server.request("POST", "/_matrix/media/v3/upload?filename=smoke.txt", b"persistent media\n", token=token)
         check(status == 200, "Media upload failed.")
+        media_directory = data / "media"
+        if expected_media_backend == "s3":
+            check(
+                not media_directory.exists() or not any(media_directory.iterdir()),
+                "The S3-enabled binary silently fell back to local media storage.",
+            )
+        elif expected_media_backend == "local":
+            check(
+                media_directory.is_dir() and any(media_directory.iterdir()),
+                "The local media backend did not persist its uploaded media locally.",
+            )
+        else:
+            raise ValueError(f"Unsupported expected media backend: {expected_media_backend}")
         print("PASS: pinned binary, rendered SMTP/TURN/RTC config, offline bootstrap, exact password login, discovery, closed registration, rooms and media")
     finally:
         server.stop()

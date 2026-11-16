@@ -1,0 +1,41 @@
+name: Sync clean Continuwuity fork
+
+on:
+  push:
+    branches: [agent/s3-build-pipeline, agent/sync-validation]
+    paths: [.github/workflows/sync-fork.yml]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fast-forward the clean fork branch
+        env:
+          FORK_SYNC_DEPLOY_KEY: ${{ secrets.FORK_SYNC_DEPLOY_KEY }}
+        run: |
+          set -eu
+          test -n "$FORK_SYNC_DEPLOY_KEY"
+          mkdir -m 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > "$RUNNER_TEMP/ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/ssh/known_hosts"
+          eval "$(ssh-agent -s)"
+          trap 'ssh-agent -k >/dev/null' EXIT
+          printf '%s\n' "$FORK_SYNC_DEPLOY_KEY" | ssh-add - >/dev/null
+          unset FORK_SYNC_DEPLOY_KEY
+          git init "$RUNNER_TEMP/fork-sync"
+          cd "$RUNNER_TEMP/fork-sync"
+          git remote add fork git@github.com:0cwa/continuwuity.git
+          git fetch --no-tags fork refs/heads/main:refs/remotes/fork/main
+          git fetch --no-tags https://forgejo.ellis.link/continuwuation/continuwuity.git refs/heads/main
+          git merge-base --is-ancestor refs/remotes/fork/main FETCH_HEAD || {
+            echo 'Fork main is not an ancestor of upstream main; refusing to overwrite it.' >&2
+            exit 1
+          }
+          git push fork FETCH_HEAD:refs/heads/main

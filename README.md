@@ -5,13 +5,16 @@ the community-maintained Matrix homeserver. This repository packages upstream
 binaries; the homeserver source lives on
 [Forgejo](https://forgejo.ellis.link/continuwuation/continuwuity).
 
-Requires **YunoHost 12.1.18 or newer** on **amd64 or arm64**. The packaged release,
-architecture-specific downloads and SHA256 checksums are pinned in
-[manifest.toml](manifest.toml).
+Requires **YunoHost 12.1.18 or newer** on **amd64 or arm64**. The current
+default package's release, architecture-specific downloads and SHA256 checksums
+are pinned in [manifest.toml](manifest.toml).
 
-This is an independent package under agent-driven development. The repository contains the
-complete installable package, automated checks, and an upstream-binary smoke
-test. See [testing](doc/TESTING.md).
+This independent package is under agent-driven development. Native S3 media
+storage uses the upstream `26.11.0-alpha.2` prerelease and is an experimental
+alpha, not a production-ready option. Its local S3 YunoHost acceptance test
+passed on amd64, and the ARM binary passed an S3 smoke test; no real-provider
+test has been run. Local media remains the recommended default. See
+[testing](doc/TESTING.md) and the [storage guide](doc/STORAGE.md).
 
 ## Support status
 
@@ -63,21 +66,26 @@ client. [Administration entry points](doc/ADMIN.md#web-pages-and-administration)
 explain the distinction.
 
 The package manages the service account, loopback backend, Nginx/TLS integration,
-Matrix discovery, offline first-admin creation, and complete database/media
-backups. Optional settings cover Dex, verified authenticated SMTP, an existing
-TURN server, and a MatrixRTC LiveKit authorization service. It does not deploy
-the separate calling services.
+Matrix discovery, offline first-admin creation, and coordinated database/media
+backups. Local media storage is the default. Experimental S3 alpha mode is
+selected at installation and requires explicit static credentials; see the
+[storage guide](doc/STORAGE.md) for its limits and test status. Optional
+settings cover Dex, verified authenticated SMTP, an existing TURN server, and
+a MatrixRTC LiveKit authorization service. It does not deploy the separate
+calling services.
 
 Backups, including automatic upgrade safety backups, contain the **full database
 and media**. YunoHost options such as `BACKUP_CORE_ONLY` or
 `do_not_backup_data` do not exclude this package's safety copy. Before a
 backup or upgrade, allow staging space of at least 110% of the data directory's
 allocated size plus 64 MiB, with additional space for the final YunoHost
-archive. The service is stopped while the snapshot is copied; on non-reflink
-filesystems this means copying the full data set. On small or slow hosts, a large snapshot and
-archive can take time and compete with the homeserver for disk I/O, so schedule
-backups and upgrades for a quiet period. Mounted app data and symlinked media
-are unsupported.
+archive. Local mode stops the service while the snapshot is copied; on
+non-reflink filesystems this means copying the full data set. Experimental S3
+alpha mode also copies and SHA-256 verifies a separate remote media generation
+while the database is stopped, so large media sets can lengthen the interruption
+and incur object-store request and egress charges. On small or slow hosts,
+schedule backups and upgrades for a quiet period. Mounted app data and symlinked
+media are unsupported.
 Normal uninstall retains data, and reinstall refuses to overwrite it;
 YunoHost's purge option removes it.
 
@@ -87,7 +95,7 @@ YunoHost's purge option removes it.
 | [Dex / OpenID guide](doc/DEX.md) | Client registration, account linking, access restrictions and migration |
 | [Testing](doc/TESTING.md) | Automated checks and the release gate |
 | [Production testing](doc/PROD_TEST.md) | Trying the package on a production YunoHost server safely |
-| [Encrypted offsite backups and external storage](doc/STORAGE.md) | Current support boundary and Storj/Restic recovery plan |
+| [Storage and offsite backups](doc/STORAGE.md) | Experimental native S3 media and encrypted offsite backup guidance |
 | [Contributing](CONTRIBUTING.md) | Repository layout, local validation and release maintenance |
 
 ## License
