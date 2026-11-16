@@ -1,0 +1,161 @@
+name: Native S3 YunoHost backup and restore
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/s3-yunohost-acceptance.yml'
+      - 'conf/**'
+      - 'scripts/**'
+      - 'manifest.toml'
+      - 'tests/s3_yunohost_acceptance.py'
+      - 'tests/test_s3_acceptance_manifest.py'
+  push:
+    branches: [agent/s3-build-pipeline]
+    paths:
+      - '.github/workflows/s3-yunohost-acceptance.yml'
+      - 'conf/**'
+      - 'scripts/**'
+      - 'manifest.toml'
+      - 'tests/s3_yunohost_acceptance.py'
+      - 'tests/test_s3_acceptance_manifest.py'
+  workflow_dispatch:
+    inputs:
+      artifact_run_id:
+        description: Temporary candidate run ID; source artifacts expire after 14 days. Use a retained run; switch to a public release asset after validation.
+        required: true
+        default: '43906710298'
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  backup_restore:
+    name: YunoHost backup and restore (${{ matrix.arch }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            seaweed_sha256: 8b538c22d47d0c3fb6792adaa6b0c735a967401270a53427d5a476dcaca9b7ae
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            seaweed_sha256: b70a09540bf8aa2b9ea2a48b3b16abe27e162e90a0c3bf041f8d414caf52de8a
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      INSTANCE: continuwuity-s3-acceptance
+      # Temporary while the candidate release is private. The build workflow retains artifacts for 14 days.
+      CANDIDATE_RUN_ID: ${{ github.event.inputs.artifact_run_id || '43906710298' }}
+      EXPECTED_SOURCE_COMMIT: 1c0abdccc4e47d63bd828f59da8a2f82396c265c
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: app
+
+      - name: Check the temporary candidate artifact is still retained
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          EXPECTED_ARTIFACT: continuwuity-s3-${{ matrix.arch }}
+        run: |
+          set -eu
+          metadata="$RUNNER_TEMP/candidate-artifacts.json"
+          status="$(curl --silent --show-error --output "$metadata" --write-out '%{http_code}' \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/$REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/artifacts?per_page=100")"
+          if [ "$status" != 200 ]; then
+            echo "::error::Candidate run $CANDIDATE_RUN_ID is unavailable (HTTP $status). This temporary artifact expires after 14 days; dispatch with a different retained run ID. After the candidate release is validated and public, use its release asset instead."
+            exit 1
+          fi
+          python3 - "$metadata" "$EXPECTED_ARTIFACT" "$CANDIDATE_RUN_ID" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text())
+          artifact_name, run_id = sys.argv[2:]
+          retained = any(
+              artifact.get("name") == artifact_name and not artifact.get("expired")
+              for artifact in metadata.get("artifacts", [])
+          )
+          if not retained:
+              raise SystemExit(
+                  f"::error::Candidate artifact {artifact_name} is missing or expired in run {run_id}. "
+                  "This temporary artifact expires after 14 days; dispatch with a different retained run ID. "
+                  "After the candidate release is validated and public, use its release asset instead."
+              )
+          PY
+
+      - name: Download the selected candidate binary artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: continuwuity-s3-${{ matrix.arch }}
+          run-id: ${{ env.CANDIDATE_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: candidate
+
+      - name: Verify candidate provenance and checksum
+        working-directory: candidate
+        run: |
+          set -eu
+          test "$(cat source-commit.txt)" = "$EXPECTED_SOURCE_COMMIT"
+          sha256sum --check "conduwuit-linux-static-${{ matrix.arch }}.sha256"
+
+      - name: Download pinned SeaweedFS test server
+        env:
+          SEAWEED_SHA256: ${{ matrix.seaweed_sha256 }}
+        run: |
+          set -eu
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/seaweedfs/seaweedfs/releases/download/4.52/linux_${{ matrix.arch }}.tar.gz" \
+            --output "$RUNNER_TEMP/seaweed.tar.gz"
+          printf '%s  %s\n' "$SEAWEED_SHA256" "$RUNNER_TEMP/seaweed.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/seaweed.tar.gz" -C "$RUNNER_TEMP" weed
+
+      - name: Install and initialise the disposable Incus host
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends --yes incus dnsmasq-base
+          sudo usermod -aG incus-admin "$USER"
+          sudo incus admin init --minimal
+          sg incus-admin -c "incus remote add yunohost https://repo.yunohost.org/incus --protocol simplestreams --public"
+          # The remote publishes yunohost/<dist>-<branch>/appci, while package_check
+          # expects the local alias to use hyphens.
+          sg incus-admin -c "incus image copy yunohost:yunohost/bookworm-stable/appci local: --alias yunohost-bookworm-stable-appci"
+          # Docker on hosted runners drops forwarded traffic used by Incus guests.
+          sudo iptables -I DOCKER-USER -j ACCEPT || true
+          sudo ip6tables -I DOCKER-USER -j ACCEPT || true
+
+      - name: Launch guest and run real YunoHost lifecycle acceptance
+        run: |
+          set -eu
+          tar -C "$GITHUB_WORKSPACE/app" --exclude=.git -cf "$RUNNER_TEMP/continuwuity-package.tar" .
+          sg incus-admin -c "incus launch local:yunohost-bookworm-stable-appci '$INSTANCE'"
+          sg incus-admin -c "incus exec '$INSTANCE' -- timeout 120 sh -c 'until systemctl is-active --quiet nginx; do sleep 2; done'"
+          sg incus-admin -c "incus exec '$INSTANCE' -- mkdir -p /opt/continuwuity-artifacts"
+          sg incus-admin -c "incus file push '$RUNNER_TEMP/continuwuity-package.tar' '$INSTANCE/tmp/continuwuity-package.tar'"
+          sg incus-admin -c "incus exec '$INSTANCE' -- mkdir -p /opt/app"
+          sg incus-admin -c "incus exec '$INSTANCE' -- tar -xf /tmp/continuwuity-package.tar -C /opt/app"
+          sg incus-admin -c "incus file push '$GITHUB_WORKSPACE/candidate/conduwuit-linux-static-${{ matrix.arch }}' '$INSTANCE/opt/continuwuity-artifacts/'"
+          sg incus-admin -c "incus file push '$RUNNER_TEMP/weed' '$INSTANCE/opt/continuwuity-artifacts/weed'"
+          sg incus-admin -c "incus exec '$INSTANCE' -- env ACCEPTANCE_ARCH='${{ matrix.arch }}' ACCEPTANCE_PACKAGE=/opt/app ACCEPTANCE_ARTIFACTS=/opt/continuwuity-artifacts python3 /opt/app/tests/s3_yunohost_acceptance.py"
+
+      - name: Show the local object server log on failure
+        if: failure()
+        run: |
+          sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /opt/continuwuity-s3-acceptance/seaweed.log" || true
+
+      - name: Remove the disposable Incus guest
+        if: always()
+        run: |
+          if sg incus-admin -c "incus info '$INSTANCE'" >/dev/null 2>&1; then
+            sg incus-admin -c "incus delete --force '$INSTANCE'"
+          fi

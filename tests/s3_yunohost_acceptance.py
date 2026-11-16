@@ -1,0 +1,601 @@
+#!/usr/bin/env python3
+"""Exercise the S3 backup/restore lifecycle in a disposable YunoHost guest.
+
+The workflow supplies an amd64 or arm64 candidate binary and a SeaweedFS
+binary. SeaweedFS, its HTTPS reverse proxy, the package, and the app all run in
+the same Incus guest. No production S3 account or external service is used.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import ssl
+import subprocess
+import tarfile
+import time
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+APP = "continuwuity"
+DOMAIN = "s3-acceptance.test"
+ADMIN = "acceptance"
+ADMIN_PASSWORD = "Test-Admin-Password-8742"
+APP_PASSWORD = "Matrix-Test-Password-8347"
+ACCESS_KEY = "acceptance-key"
+SECRET_KEY = "acceptance-secret"
+LIVE_BUCKET = "acceptance-live"
+SNAPSHOT_BUCKET = "acceptance-snapshots"
+LIVE_PREFIX = "continuwuity/media"
+S3_ENDPOINT = "https://127.0.0.1:18443"
+S3_PORT = 18333
+S3_TLS_PORT = 18443
+ARTIFACT_TLS_PORT = 18444
+MANIFEST_NAME = "continuwuity-s3-media.json"
+COMMIT_MARKER = ".continuwuity-snapshot-commit.json"
+
+PACKAGE_DIR = Path(os.environ.get("ACCEPTANCE_PACKAGE", "/opt/continuwuity-package"))
+ARTIFACT_DIR = Path(os.environ.get("ACCEPTANCE_ARTIFACTS", "/opt/continuwuity-artifacts"))
+FIXTURE_DIR = Path("/opt/continuwuity-s3-acceptance")
+ARCH = os.environ.get("ACCEPTANCE_ARCH", "")
+
+
+def _redact(value: str) -> str:
+    for secret in (ADMIN_PASSWORD, APP_PASSWORD, ACCESS_KEY, SECRET_KEY):
+        value = value.replace(secret, "[redacted]")
+    return value
+
+
+def command(label: str, argv: list[str], *, expected_success: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run a guest command without echoing credential-bearing arguments."""
+    print(f"== {label}", flush=True)
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    if output:
+        print(_redact(output.rstrip()), flush=True)
+    if expected_success and result.returncode != 0:
+        raise RuntimeError(f"{label} failed with exit status {result.returncode}")
+    if not expected_success and result.returncode == 0:
+        raise RuntimeError(f"{label} unexpectedly succeeded")
+    return result
+
+
+def prepare_package(binary: Path) -> None:
+    if not PACKAGE_DIR.is_dir() or not binary.is_file():
+        raise RuntimeError("The workflow did not provide the package and candidate binary.")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    manifest_path = PACKAGE_DIR / "manifest.toml"
+    manifest = rewrite_candidate_manifest(
+        manifest_path.read_text(encoding="utf-8"), ARCH, binary.name, digest
+    )
+    manifest_path.write_text(manifest, encoding="utf-8")
+    candidate = tomllib.loads(manifest)["resources"]["sources"]["main"][ARCH]
+    if candidate["url"] != f"https://127.0.0.1:{ARTIFACT_TLS_PORT}/{binary.name}" or candidate["sha256"] != digest:
+        raise RuntimeError("The temporary package manifest does not pin the supplied candidate binary.")
+
+
+def rewrite_candidate_manifest(manifest: str, architecture: str, binary_name: str, digest: str) -> str:
+    """Point the temporary package manifest at the supplied guest-local binary."""
+    url = f"https://127.0.0.1:{ARTIFACT_TLS_PORT}/{binary_name}"
+    for key, value in ((f"{architecture}.url", url), (f"{architecture}.sha256", digest)):
+        pattern = re.compile(rf"^(?P<indent>[ \t]*){re.escape(key)}\s*=\s*.*$", re.MULTILINE)
+        manifest, count = pattern.subn(
+            lambda match: f'{match.group("indent")}{key} = "{value}"',
+            manifest,
+            count=1,
+        )
+        if count != 1:
+            raise RuntimeError(f"Could not set the candidate source field {key}.")
+    return manifest
+
+
+def setup_s3_fixture(binary: Path, weed: Path) -> subprocess.Popen[bytes]:
+    FIXTURE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    artifact_root = FIXTURE_DIR / "artifacts"
+    artifact_root.mkdir(mode=0o755, exist_ok=True)
+    served_binary = artifact_root / binary.name
+    shutil.copyfile(binary, served_binary)
+    served_binary.chmod(0o755)
+
+    key = FIXTURE_DIR / "server.key"
+    cert = FIXTURE_DIR / "server.crt"
+    command(
+        "Create a guest-local TLS certificate",
+        [
+            "openssl", "req", "-x509", "-nodes", "-newkey", "rsa:2048",
+            "-keyout", str(key), "-out", str(cert), "-days", "2",
+            "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+        ],
+    )
+    key.chmod(0o600)
+    trusted_cert = Path("/usr/local/share/ca-certificates/continuwuity-s3-acceptance.crt")
+    trusted_cert.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(cert, trusted_cert)
+    command("Trust the guest-local TLS certificate", ["update-ca-certificates"])
+
+    nginx_conf = Path("/etc/nginx/conf.d/continuwuity-s3-acceptance.conf")
+    nginx_conf.write_text(
+        f"""
+server {{
+    listen 127.0.0.1:{S3_TLS_PORT} ssl;
+    server_name 127.0.0.1;
+    ssl_certificate {cert};
+    ssl_certificate_key {key};
+    client_max_body_size 16m;
+    location / {{
+        proxy_pass http://127.0.0.1:{S3_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_request_buffering off;
+    }}
+}}
+server {{
+    listen 127.0.0.1:{ARTIFACT_TLS_PORT} ssl;
+    server_name 127.0.0.1;
+    ssl_certificate {cert};
+    ssl_certificate_key {key};
+    root {artifact_root};
+    location / {{
+        try_files $uri =404;
+    }}
+}}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    command("Validate and reload the loopback TLS proxy", ["nginx", "-t"])
+    command("Reload nginx for the loopback TLS proxy", ["systemctl", "reload", "nginx"])
+
+    weed_target = Path("/usr/local/bin/weed")
+    shutil.copyfile(weed, weed_target)
+    weed_target.chmod(0o755)
+    data_dir = FIXTURE_DIR / "seaweed-data"
+    data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    log = (FIXTURE_DIR / "seaweed.log").open("wb")
+    process = subprocess.Popen(
+        [
+            str(weed_target), "server", "-ip=127.0.0.1", "-ip.bind=127.0.0.1",
+            f"-dir={data_dir}", "-master.port=19333", "-master.volumeSizeLimitMB=64",
+            "-volume.port=18080", "-volume.max=2", "-volume.preStopSeconds=0",
+            "-filer", "-filer.port=18888", "-s3", f"-s3.port={S3_PORT}",
+            "-master.telemetry=false",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    create_bucket(f"https://127.0.0.1:{S3_TLS_PORT}/{LIVE_BUCKET}", process)
+    create_bucket(f"https://127.0.0.1:{S3_TLS_PORT}/{SNAPSHOT_BUCKET}", process)
+    print("PASS: disposable SeaweedFS S3 endpoint is reachable over verified HTTPS", flush=True)
+    return process
+
+
+def create_bucket(url: str, process: subprocess.Popen[bytes]) -> None:
+    context = ssl.create_default_context()
+    last_error: Exception | None = None
+    for _ in range(45):
+        if process.poll() is not None:
+            raise RuntimeError("The guest-local SeaweedFS process stopped during startup.")
+        request = urllib.request.Request(url, method="PUT")
+        try:
+            with urllib.request.urlopen(request, context=context, timeout=3) as response:
+                if response.status in (200, 201, 204):
+                    return
+                last_error = RuntimeError(f"Unexpected bucket create status {response.status}")
+        except urllib.error.HTTPError as error:
+            if error.code == 409:
+                return
+            last_error = error
+        except (OSError, urllib.error.URLError) as error:
+            last_error = error
+        time.sleep(2)
+    raise RuntimeError(f"Could not create a disposable S3 bucket: {type(last_error).__name__}")
+
+
+def ensure_yunohost() -> None:
+    installed_marker = Path("/etc/yunohost/installed")
+    if not installed_marker.exists():
+        command(
+            "Postinstall the disposable YunoHost guest",
+            [
+                "yunohost", "tools", "postinstall", "--domain", DOMAIN,
+                "--username", ADMIN, "--fullname", "Acceptance User",
+                "--password", ADMIN_PASSWORD, "--i-have-read-terms-of-services",
+            ],
+        )
+        return
+
+    domain = subprocess.run(
+        ["yunohost", "domain", "info", DOMAIN], capture_output=True, text=True, check=False
+    )
+    if domain.returncode != 0:
+        command("Add the package test domain", ["yunohost", "domain", "add", DOMAIN])
+    user = subprocess.run(
+        ["yunohost", "user", "info", ADMIN], capture_output=True, text=True, check=False
+    )
+    if user.returncode != 0:
+        command(
+            "Create the package test user",
+            [
+                "yunohost", "user", "create", ADMIN,
+                "-f", "Acceptance", "-l", "User", "-m", f"{ADMIN}@{DOMAIN}",
+                "-p", ADMIN_PASSWORD,
+            ],
+        )
+
+
+def http_request(port: int, method: str, path: str, *, token: str = "", body: bytes | dict | None = None) -> tuple[int, bytes, dict]:
+    url = f"http://127.0.0.1:{port}{path}"
+    headers = {"Host": DOMAIN}
+    payload: bytes | None
+    if isinstance(body, dict):
+        payload = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    else:
+        payload = body
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=payload, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read()
+            try:
+                result = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                result = {}
+            return response.status, raw, result
+    except urllib.error.HTTPError as error:
+        raw = error.read()
+        try:
+            result = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            result = {}
+        return error.code, raw, result
+
+
+def app_port() -> int:
+    import yaml
+
+    settings_file = Path(f"/etc/yunohost/apps/{APP}/settings.yml")
+    settings = yaml.safe_load(settings_file.read_text(encoding="utf-8"))
+    port = int(settings.get("port", 8008))
+    if not 1 <= port <= 65535:
+        raise RuntimeError("YunoHost did not save a valid Continuwuity port.")
+    return port
+
+
+def login_and_upload(port: int, label: str, payload: bytes) -> tuple[str, str]:
+    status, _, result = http_request(
+        port,
+        "POST",
+        "/_matrix/client/v3/login",
+        body={
+            "type": "m.login.password",
+            "identifier": {"type": "m.id.user", "user": ADMIN},
+            "password": APP_PASSWORD,
+        },
+    )
+    if status != 200 or not result.get("access_token"):
+        raise RuntimeError(f"Matrix administrator login failed before {label}.")
+    token = result["access_token"]
+    status, _, result = http_request(
+        port,
+        "POST",
+        "/_matrix/media/v3/upload?" + urllib.parse.urlencode({"filename": f"{label}.txt"}),
+        token=token,
+        body=payload,
+    )
+    if status != 200 or not result.get("content_uri", "").startswith("mxc://"):
+        raise RuntimeError(f"Matrix media upload failed during {label}.")
+    return token, result["content_uri"]
+
+
+def settings() -> dict:
+    import yaml
+
+    return yaml.safe_load(Path(f"/etc/yunohost/apps/{APP}/settings.yml").read_text(encoding="utf-8"))
+
+
+def rclone_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RCLONE_CONFIG": "/dev/null",
+            "RCLONE_CONFIG_ACCEPTANCE_TYPE": "s3",
+            "RCLONE_CONFIG_ACCEPTANCE_PROVIDER": "Other",
+            "RCLONE_CONFIG_ACCEPTANCE_ENV_AUTH": "false",
+            "RCLONE_CONFIG_ACCEPTANCE_ACCESS_KEY_ID": ACCESS_KEY,
+            "RCLONE_CONFIG_ACCEPTANCE_SECRET_ACCESS_KEY": SECRET_KEY,
+            "RCLONE_CONFIG_ACCEPTANCE_REGION": "us-east-1",
+            "RCLONE_CONFIG_ACCEPTANCE_ENDPOINT": S3_ENDPOINT,
+            "RCLONE_CONFIG_ACCEPTANCE_FORCE_PATH_STYLE": "true",
+        }
+    )
+    return environment
+
+
+def rclone_text(*arguments: str) -> str:
+    result = subprocess.run(
+        ["rclone", *arguments],
+        env=rclone_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"rclone {arguments[0]} failed with exit status {result.returncode}.")
+    return result.stdout
+
+
+def backup_archive(existing: set[Path], label: str) -> tuple[Path, str]:
+    command(f"Create the {label} YunoHost archive", ["yunohost", "backup", "create", "--apps", APP])
+    archive_dir = Path("/home/yunohost.backup/archives")
+    created = sorted(
+        (path for path in archive_dir.iterdir() if path.is_file() and path not in existing and (path.name.endswith(".tar") or path.name.endswith(".tar.gz"))),
+        key=lambda path: path.stat().st_mtime_ns,
+    )
+    if len(created) != 1:
+        raise RuntimeError(f"Expected one new {label} archive; found {len(created)}.")
+    archive = created[0]
+    name = archive.name.removesuffix(".tar.gz").removesuffix(".tar")
+    print(f"Archive created: {archive.name}", flush=True)
+    return archive, name
+
+
+def archives() -> set[Path]:
+    archive_dir = Path("/home/yunohost.backup/archives")
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        path for path in archive_dir.iterdir()
+        if path.is_file() and (path.name.endswith(".tar") or path.name.endswith(".tar.gz"))
+    }
+
+
+def snapshot_manifest(archive: Path, data_dir: Path) -> tuple[dict, str]:
+    with tarfile.open(archive, "r:*") as tar:
+        members = tar.getmembers()
+        marker_member = next(
+            (member for member in members if PurePosixPath(member.name).name == MANIFEST_NAME),
+            None,
+        )
+        if marker_member is None:
+            raise RuntimeError("The YunoHost archive does not contain the S3 snapshot manifest.")
+        manifest_file = tar.extractfile(marker_member)
+        if manifest_file is None:
+            raise RuntimeError("The S3 snapshot manifest in the archive is unreadable.")
+        manifest = json.load(manifest_file)
+        current_relative = str(data_dir).lstrip("/") + "/CURRENT"
+        if not any(member.isfile() and member.name.lstrip("/").endswith(current_relative) for member in members):
+            raise RuntimeError("The YunoHost archive does not contain the RocksDB CURRENT marker.")
+    if manifest.get("schema_version") != 1 or not manifest.get("inventory"):
+        raise RuntimeError("The archived S3 manifest has no verified media inventory.")
+    generation = manifest.get("generation", "")
+    snapshot = manifest.get("snapshot", {})
+    if not generation or snapshot.get("bucket") != SNAPSHOT_BUCKET:
+        raise RuntimeError("The archived S3 manifest names an unexpected snapshot location.")
+    marker_key = f"ACCEPTANCE:{SNAPSHOT_BUCKET}/{snapshot.get('prefix', '')}/{COMMIT_MARKER}"
+    remote_marker = json.loads(rclone_text("cat", marker_key))
+    if remote_marker.get("generation") != generation:
+        raise RuntimeError("The remote S3 snapshot commit marker does not match the YunoHost archive.")
+    print(f"PASS: archive includes RocksDB CURRENT and the committed S3 generation {generation}", flush=True)
+    return manifest, generation
+
+
+def download_media(port: int, token: str, content_uri: str, expected: bytes, label: str) -> None:
+    media = content_uri.removeprefix("mxc://")
+    path = "/_matrix/client/v1/media/download/" + media
+    status, body, _ = http_request(port, "GET", path, token=token)
+    if status != 200 or body != expected:
+        raise RuntimeError(f"{label} media did not restore byte-for-byte through Matrix.")
+    print(f"PASS: {label} media downloads through the restored Matrix server", flush=True)
+
+
+def tree_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            digest.update(b"L\0" + relative.encode() + b"\0" + os.readlink(path).encode() + b"\0")
+        elif path.is_file():
+            file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            digest.update(b"F\0" + relative.encode() + b"\0" + file_hash.encode() + b"\0")
+    return digest.hexdigest()
+
+
+def archive_data_digest(archive: Path, data_dir: Path) -> str:
+    relative_root = str(data_dir).lstrip("/").rstrip("/") + "/"
+    digest = hashlib.sha256()
+    found = False
+    with tarfile.open(archive, "r:*") as tar:
+        for member in sorted(tar.getmembers(), key=lambda item: item.name):
+            name = member.name
+            while name.startswith("./"):
+                name = name[2:]
+            name = name.lstrip("/")
+            root_offset = name.find(relative_root)
+            if root_offset < 0:
+                continue
+            relative = name[root_offset + len(relative_root):]
+            if member.issym():
+                digest.update(b"L\0" + relative.encode() + b"\0" + member.linkname.encode() + b"\0")
+                found = True
+                continue
+            if not member.isfile():
+                continue
+            found = True
+            stream = tar.extractfile(member)
+            if stream is None:
+                raise RuntimeError("The archived RocksDB data contains an unreadable file.")
+            file_hash = hashlib.sha256(stream.read()).hexdigest()
+            digest.update(b"F\0" + relative.encode() + b"\0" + file_hash.encode() + b"\0")
+    if not found:
+        raise RuntimeError("The YunoHost archive contains no Continuwuity database files.")
+    return digest.hexdigest()
+
+
+def break_archived_override(archive: Path) -> None:
+    temporary = archive.with_suffix(archive.suffix + ".rewriting")
+    replaced = 0
+    try:
+        with archive.open("rb") as stream:
+            is_gzip = stream.read(2) == b"\x1f\x8b"
+        target_mode = "w:gz" if is_gzip else "w"
+        with tarfile.open(archive, "r:*") as source, tarfile.open(temporary, target_mode) as target:
+            for member in source.getmembers():
+                normalized = member.name.lstrip("/")
+                if normalized.endswith("var/www/continuwuity/overrides.toml"):
+                    replacement = copy.copy(member)
+                    content = b'[global]\nallow_registration = "invalid"\n'
+                    replacement.size = len(content)
+                    target.addfile(replacement, io.BytesIO(content))
+                    replaced += 1
+                elif member.isfile():
+                    stream = source.extractfile(member)
+                    if stream is None:
+                        raise RuntimeError("Could not read a file while preparing the forced restore failure.")
+                    target.addfile(member, stream)
+                else:
+                    target.addfile(member)
+        if replaced != 1:
+            raise RuntimeError(f"Expected one archived overrides.toml file; found {replaced}.")
+        temporary.replace(archive)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print("Prepared an invalidly typed archived override to fail during service startup after the data swap", flush=True)
+
+
+def install_package() -> None:
+    args = {
+        "domain": DOMAIN,
+        "path": "/",
+        "admin": ADMIN,
+        "password": APP_PASSWORD,
+        "auth_type": "password",
+        "server_name": DOMAIN,
+        "media_backend": "s3",
+        "media_s3_endpoint": S3_ENDPOINT,
+        "media_s3_bucket": LIVE_BUCKET,
+        "media_s3_backup_bucket": SNAPSHOT_BUCKET,
+        "media_s3_region": "us-east-1",
+        "media_s3_key_prefix": LIVE_PREFIX,
+        "media_s3_access_key_id": ACCESS_KEY,
+        "media_s3_secret_access_key": SECRET_KEY,
+    }
+    command(
+        "Install the package with native S3 media storage",
+        [
+            "yunohost", "app", "install", str(PACKAGE_DIR), "--force",
+            "--args", urllib.parse.urlencode(args),
+        ],
+    )
+
+
+def remove_package(label: str) -> None:
+    command(f"Remove the app for {label}", ["yunohost", "app", "remove", APP, "--force"])
+
+
+def restore_archive(name: str, *, expected_success: bool) -> subprocess.CompletedProcess[str]:
+    return command(
+        f"Restore {name}",
+        ["yunohost", "backup", "restore", name, "--apps", APP],
+        expected_success=expected_success,
+    )
+
+
+def main() -> None:
+    if ARCH not in ("amd64", "arm64"):
+        raise RuntimeError("ACCEPTANCE_ARCH must be amd64 or arm64.")
+    binary = ARTIFACT_DIR / f"conduwuit-linux-static-{ARCH}"
+    weed = ARTIFACT_DIR / "weed"
+    if not weed.is_file():
+        raise RuntimeError("The workflow did not provide the pinned SeaweedFS binary.")
+    prepare_package(binary)
+    server = setup_s3_fixture(binary, weed)
+    try:
+        ensure_yunohost()
+        install_package()
+        port = app_port()
+
+        initial_payload = b"native YunoHost S3 backup acceptance media\n"
+        token, initial_uri = login_and_upload(port, "initial-archive-media", initial_payload)
+        config = tomllib.loads(Path("/var/www/continuwuity/config.toml").read_text(encoding="utf-8"))["global"]
+        if config.get("media_backend") != "s3" or config.get("media_s3", {}).get("endpoint") != S3_ENDPOINT:
+            raise RuntimeError("The installed native binary is not configured for the trusted S3 endpoint.")
+        if not (Path("/home/yunohost.app/continuwuity/CURRENT").is_file()):
+            raise RuntimeError("The live YunoHost app did not create its RocksDB database.")
+        media_dir = Path("/home/yunohost.app/continuwuity/media")
+        if media_dir.exists() and any(media_dir.iterdir()):
+            raise RuntimeError("The S3 media upload fell back to local disk storage.")
+
+        original_state = archives()
+        archive, archive_name = backup_archive(original_state, "primary")
+        data_dir = Path("/home/yunohost.app/continuwuity")
+        snapshot_manifest(archive, data_dir)
+
+        remove_package("successful restore")
+        restore_archive(archive_name, expected_success=True)
+        port = app_port()
+        download_media(port, token, initial_uri, initial_payload, "initial archived")
+        restored_prefix = settings().get("media_s3_key_prefix", "")
+        if not restored_prefix.startswith(".ynh-restore-"):
+            raise RuntimeError("Successful restore did not switch the live media setting to its fresh S3 prefix.")
+        status, _, whoami = http_request(port, "GET", "/_matrix/client/v3/account/whoami", token=token)
+        if status != 200 or whoami.get("user_id") != f"@{ADMIN}:{DOMAIN}":
+            raise RuntimeError("The successful YunoHost restore did not recover the Matrix database session.")
+
+        baseline_payload = b"retained pre-failure Matrix media\n"
+        token, _ = login_and_upload(port, "retained-before-failure", baseline_payload)
+        second_archive, second_name = backup_archive(archives(), "forced-failure baseline")
+        snapshot_manifest(second_archive, data_dir)
+
+        newer_payload = b"state written after the forced-failure archive\n"
+        token, newer_uri = login_and_upload(port, "post-snapshot-state", newer_payload)
+        download_media(port, token, newer_uri, newer_payload, "post-snapshot")
+        remove_package("forced restore failure")
+        retained_digest = tree_digest(data_dir)
+        archived_digest = archive_data_digest(second_archive, data_dir)
+        if retained_digest == archived_digest:
+            raise RuntimeError("The forced-failure restore would not replace a distinguishable retained database state.")
+
+        break_archived_override(second_archive)
+        failed_restore = restore_archive(second_name, expected_success=False)
+        failed_output = failed_restore.stdout + failed_restore.stderr
+        for checkpoint in (
+            "Restoring Continuwuity and its complete data snapshot",
+            "Starting Continuwuity",
+            "Original data recovered at",
+        ):
+            if checkpoint not in failed_output:
+                raise RuntimeError(f"The forced restore failure did not reach the expected rollback checkpoint: {checkpoint}.")
+        if data_dir.is_symlink() or not (data_dir / "CURRENT").is_file() or (data_dir / "CURRENT").is_symlink() or (data_dir / "CURRENT").stat().st_size == 0:
+            raise RuntimeError("The failed restore did not leave a safe, readable retained RocksDB directory.")
+        if subprocess.run(["systemctl", "is-active", "--quiet", f"{APP}.service"], check=False).returncode == 0:
+            raise RuntimeError("The failed restore left the service active against the retained data directory.")
+        restored_digest = tree_digest(data_dir)
+        if restored_digest != retained_digest:
+            raise RuntimeError("The forced restore failure did not roll back the original retained database tree.")
+        if list(data_dir.parent.glob(f".{APP}-restore-rollback.*")):
+            raise RuntimeError("The failed restore left a rollback transaction directory beside the retained data.")
+        print(f"PASS: forced restore failure left the exact retained database tree safe at {data_dir}", flush=True)
+        print("PASS: real YunoHost install, archive, S3 generation, successful restore, media readback, and retained-data recovery", flush=True)
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=5)
+
+
+if __name__ == "__main__":
+    main()
