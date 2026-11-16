@@ -47,6 +47,21 @@ class PackageTests(unittest.TestCase):
         self.assertIs(permissions["auth_header"], False)
         self.assertNotIn("exposed", manifest["resources"]["ports"]["main"])
 
+    def test_s3_password_questions_remain_safe_in_local_and_s3_install_modes(self):
+        # YunoHost 12.1 turns hidden inputs into None but reinjects every
+        # password form value into the install environment. Keep these
+        # optional masked inputs visible so blank values normalize to "".
+        manifest = tomllib.loads((PACKAGE / "manifest.toml").read_text())
+        install = manifest["install"]
+        self.assertEqual(install["media_backend"]["default"], "local")
+        for backend in ("local", "s3"):
+            with self.subTest(backend=backend):
+                for name in ("media_s3_access_key_id", "media_s3_secret_access_key"):
+                    option = install[name]
+                    self.assertEqual(option["type"], "password")
+                    self.assertTrue(option["optional"])
+                    self.assertNotIn("visible", option)
+
     def test_s3_configuration_renders_managed_location_and_protected_static_credentials(self):
         config = tomllib.loads(render_config(
             media_backend="s3",
