@@ -308,7 +308,10 @@ def login_and_upload(port: int, label: str, payload: bytes) -> tuple[str, str]:
         body=payload,
     )
     if status != 200 or not result.get("content_uri", "").startswith("mxc://"):
-        raise RuntimeError(f"Matrix media upload failed during {label}.")
+        errcode = result.get("errcode", "") if isinstance(result, dict) else ""
+        error = result.get("error", "") if isinstance(result, dict) else ""
+        detail = f", {errcode}: {_redact(str(error))[:240]}" if error or errcode else ""
+        raise RuntimeError(f"Matrix media upload failed during {label} (HTTP {status}{detail}).")
     return token, result["content_uri"]
 
 

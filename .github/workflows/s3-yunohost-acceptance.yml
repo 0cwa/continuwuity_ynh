@@ -1,17 +1,10 @@
 name: Native S3 YunoHost backup and restore
 
 on:
+  # PR synchronize events already cover draft-branch pushes; avoid running
+  # the same heavyweight guest acceptance twice for one commit.
   pull_request:
     branches: [main]
-    paths:
-      - '.github/workflows/s3-yunohost-acceptance.yml'
-      - 'conf/**'
-      - 'scripts/**'
-      - 'manifest.toml'
-      - 'tests/s3_yunohost_acceptance.py'
-      - 'tests/test_s3_acceptance_manifest.py'
-  push:
-    branches: [agent/s3-build-pipeline]
     paths:
       - '.github/workflows/s3-yunohost-acceptance.yml'
       - 'conf/**'
@@ -152,6 +145,12 @@ jobs:
         if: failure()
         run: |
           sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /opt/continuwuity-s3-acceptance/seaweed.log" || true
+          sg incus-admin -c "incus exec '$INSTANCE' -- journalctl -u continuwuity.service --no-pager -n 160" \
+            | grep -Ei 's3|media|error|warn' \
+            | sed -e 's/Test-Admin-Password-8742/[redacted]/g' \
+                  -e 's/Matrix-Test-Password-8347/[redacted]/g' \
+                  -e 's/acceptance-key/[redacted]/g' \
+                  -e 's/acceptance-secret/[redacted]/g' || true
 
       - name: Remove the disposable Incus guest
         if: always()
