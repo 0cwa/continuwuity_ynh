@@ -19,9 +19,11 @@ jobs:
           - arch: amd64
             runner: ubuntu-24.04
             nix_package: default-static-x86_64
+            seaweed_sha256: 8b538c22d47d0c3fb6792adaa6b0c735a967401270a53427d5a476dcaca9b7ae
           - arch: arm64
             runner: ubuntu-24.04-arm
             nix_package: default-static-aarch64
+            seaweed_sha256: b70a09540bf8aa2b9ea2a48b3b16abe27e162e90a0c3bf041f8d414caf52de8a
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
@@ -76,6 +78,44 @@ jobs:
               with SmtpFixture() as smtp_port:
                   run_smoke(Path(os.environ["BINARY_PATH"]), Path(directory), smtp_port)
           PY
+
+      - name: Exercise S3 uploads and database restore
+        env:
+          ARCH: ${{ matrix.arch }}
+          SEAWEED_SHA256: ${{ matrix.seaweed_sha256 }}
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_REGION: us-east-1
+        run: |
+          set -eu
+          curl --fail --location --silent --show-error \
+            "https://github.com/seaweedfs/seaweedfs/releases/download/4.52/linux_${ARCH}.tar.gz" \
+            --output "$RUNNER_TEMP/seaweed.tar.gz"
+          printf '%s  %s\n' "$SEAWEED_SHA256" "$RUNNER_TEMP/seaweed.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/seaweed.tar.gz" -C "$RUNNER_TEMP" weed
+          mkdir -p "$RUNNER_TEMP/seaweed-data"
+          "$RUNNER_TEMP/weed" server -ip=127.0.0.1 -ip.bind=127.0.0.1 \
+            -dir="$RUNNER_TEMP/seaweed-data" -master.port=19333 -master.volumeSizeLimitMB=64 \
+            -volume.port=18080 -volume.max=2 -volume.preStopSeconds=0 \
+            -filer -filer.port=18888 -s3 -s3.port=18333 -master.telemetry=false \
+            > "$RUNNER_TEMP/seaweed.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent --max-time 2 -X PUT http://127.0.0.1:18333/continuwuity-test; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            tail -100 "$RUNNER_TEMP/seaweed.log"
+            exit 1
+          fi
+          "$RUNNER_TEMP/s3-smoke-venv/bin/python" package/tests/smoke_s3.py \
+            --binary "$GITHUB_WORKSPACE/artifacts/conduwuit-linux-static-$ARCH" \
+            --endpoint http://127.0.0.1:18333 --bucket continuwuity-test
 
       - name: Upload experimental binary and provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
