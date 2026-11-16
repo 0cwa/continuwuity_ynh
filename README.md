@@ -95,7 +95,7 @@ YunoHost's purge option removes it.
 | [Dex / OpenID guide](doc/DEX.md) | Client registration, account linking, access restrictions and migration |
 | [Testing](doc/TESTING.md) | Automated checks and the release gate |
 | [Production testing](doc/PROD_TEST.md) | Trying the package on a production YunoHost server safely |
-| [Encrypted offsite backups and external storage](doc/STORAGE.md) | Current support boundary and Storj/Restic recovery plan |
+| [Storage and offsite backups](doc/STORAGE.md) | Experimental native S3 media and encrypted offsite backup guidance |
 | [Contributing](CONTRIBUTING.md) | Repository layout, local validation and release maintenance |
 
 ## License
