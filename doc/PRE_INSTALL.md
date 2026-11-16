@@ -51,7 +51,11 @@ renamed**, even when changing the web/API address later.
   reachable with a trusted certificate. Only OAuth-capable Matrix clients can
   log in. Dex's default LDAP connector admits all YunoHost users; the homeserver's
   portal permission is not an admission policy.
-- Backups include the full database and media, even before upgrades. Budget for
-  a complete extra copy and a short interruption while the snapshot is created.
+- Backups include the full database and media, even before upgrades. In the
+  default local mode, budget for a complete extra copy and a short interruption
+  while the snapshot is created. The draft S3 mode is not merged, its binaries
+  are not pinned, and it is not production-ready; it also needs remote storage
+  for every retained generation and can keep the service stopped while media is
+  hashed over the network. See [storage notes](STORAGE.md).
 - This initial package has automated and upstream-binary checks, but still needs
   its full YunoHost VM acceptance test before a production deployment.

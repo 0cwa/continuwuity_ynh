@@ -238,8 +238,9 @@ Create backups through YunoHost's UI or CLI:
 sudo yunohost backup create --apps continuwuity
 ```
 
-The package stops the service, copies all database/media files into the backup
-workspace, and restarts it if it had been running. The stopped snapshot must
+The package stops the service, copies its database into the backup workspace,
+and restarts it if it had been running. With the default local media backend,
+the workspace also contains all media. The stopped snapshot must
 contain a nonempty RocksDB `CURRENT` marker before YunoHost can archive it. If
 copying fails, or the previously running service cannot be restarted, the
 package fails the backup. It tries to restore the original service state after
@@ -253,6 +254,44 @@ requires available staging space of at least 110% of its allocated size plus
 additional capacity and monitor backup duration as media grows. Routine
 upgrades/settings changes no longer recursively change ownership of every
 database and media file.
+
+### Draft native S3 media mode
+
+Local media remains the default. The native S3 mode described here exists only
+in the current draft PR: it is not merged, its server binaries are not pinned
+in the manifest, and it is not a released or production-ready option. The mode
+is chosen at installation; changing between local and S3 later requires a
+separately completed media migration. S3 mode requires an explicit static
+access-key ID and secret. It uses the configured S3 endpoint (or AWS S3), region
+and credentials for both live media and snapshots. Configure a separate
+snapshot bucket on that same provider, endpoint and region.
+
+For an S3 backup, the package stops Continuwuity, copies the stopped database
+into the YunoHost archive workspace, and creates a new unique remote media
+generation. It downloads object contents to calculate and compare SHA-256
+hashes, then stores a local manifest in the archive that identifies the
+verified remote generation. The database archive and its matching manifest and
+remote generation are one coordinated recovery set: the YunoHost archive alone
+does not contain the S3 media, and the remote generation alone does not contain
+the database. Keep both available together.
+
+Hash verification reads the media over the network and can incur object-store
+egress charges. The service remains stopped through the remote snapshot and
+verification work, so interruption time grows with media size and network or
+provider speed. Each backup creates another complete remote media generation;
+budget storage for every retained generation. The package does not automatically
+delete generations. A failed or interrupted upload can leave an incomplete
+orphan prefix; a failed restore can leave its fresh target prefix as an orphan.
+Review and remove remote objects manually only after confirming they are not
+referenced by a retained archive or active service.
+
+Restoring an S3 archive verifies its matching generation and copies media into
+a newly generated, empty, nonoverlapping prefix before activating that prefix.
+It does not overwrite the source generation or current live prefix. Keep the
+archive manifest and snapshot generation intact until the restore succeeds.
+Very low-resource hosts (including small xli plans) should expect longer
+service downtime while the database is stopped and remote objects are copied
+and read back; test with the expected media size before relying on this mode.
 
 All data is included even for automatic upgrade backups and when
 `BACKUP_CORE_ONLY` or `do_not_backup_data` would normally omit data. These
@@ -275,11 +314,12 @@ does not copy or overwrite Dex's shared LDAP connector and other clients.
 Restoration requires the same identity domain and matching architecture for the
 archived binary. Cross-architecture restoration is not implemented: restore on
 the original architecture, or plan a tested binary/data migration separately.
-The package also rejects symlinked data directories and mounted/symlinked
-media. External rclone/FUSE primary media is not a supported storage mode; do
-not mount it manually, because a lost mount could otherwise expose an empty
-underlying directory. For a supported recovery option, see the
-[Storj encrypted offsite backup guide](STORAGE.md).
+The local backend rejects mounted data and symlinked media. Do not mount
+rclone/FUSE manually, because a missing mount could expose an empty underlying
+directory. The draft S3 lifecycle and limitations are described in the
+[storage guide](STORAGE.md); it is not a released or production-ready option.
+For encrypted offsite copies of local-mode backups, see the
+[Restic guide](STORAGE.md).
 
 ## Upgrade, remove and migrate
 

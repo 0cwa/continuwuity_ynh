@@ -1,20 +1,47 @@
-# Encrypted offsite backups and external media: support boundary
+# Media storage and offsite backup
 
-The current package supports **local POSIX database and media storage** only.
-Continuwuity keeps its RocksDB data and media under `$data_dir` (normally
-`/home/yunohost.app/continuwuity`), with media in `$data_dir/media/`.
+Local POSIX storage is the default. The native S3 media mode described here is
+in a draft PR: it is not merged, its server binaries are not pinned in the
+manifest, and it must not be treated as released or production-ready. Do not
+manually mount object storage or FUSE under the data directory. The package's
+local mode rejects mounted data and symlinked media rather than risking an
+incomplete backup.
 
-**Do not mount rclone, Storj, S3/FUSE, or use symlinks anywhere under `media/`
-in production with this package version.** The backup and restore scripts
-explicitly reject mounts at or beneath the app data directory and symlinks in
-the media tree, rather than creating an apparently successful but incomplete
-archive. This also excludes separately mounted local volumes at the
-data-directory root until a deliberately managed storage mode exists. An
-unmounted remote cannot reliably be distinguished from an ordinary local media
-directory without an explicitly managed storage mode. This package does not
-yet implement that mode.
+## Draft native S3 media mode
 
-## Recommended now: Restic-encrypted backups in Storj
+S3 mode is selected during installation and requires an explicit static access
+key ID and secret. The live media bucket and the distinct snapshot bucket must
+use the same S3 provider, endpoint and region. Omitting the endpoint selects
+AWS S3. The package fixes the backend, endpoint, region, bucket and live key
+prefix at installation; changing those requires a deliberate media migration.
+
+The package coordinates each S3 media snapshot with a stopped database copy in
+the YunoHost backup archive. It copies live media into a unique generation in
+the snapshot bucket, verifies object contents with SHA-256, and puts a manifest
+for that exact generation in the archive beside the database. These pieces are
+one recovery set, not independent backups: retain the archive, manifest and
+referenced generation together. Loss of either the archive or remote objects
+leaves an incomplete recovery.
+
+SHA-256 verification reads object contents over the network and can incur
+provider egress charges. The service stays stopped while the database is
+copied and the remote media generation is transferred and verified. The time
+scales with data size, available resources, network throughput and provider
+speed. In particular, low-resource xli plans may have a long interruption;
+measure with representative data before relying on S3 mode. Every run creates a
+new full remote generation, so storage costs grow with the number of retained
+generations. The package does not automatically delete snapshots.
+
+Restore verifies the archive's referenced generation and copies its media into
+a new empty prefix that does not overlap the existing live prefix. It switches
+the restored configuration to that fresh prefix only as part of the restore;
+the source generation is left intact. Failed snapshot uploads can leave partial
+orphan prefixes. Failed restores can leave a new target prefix behind; the
+restore reports the prefix, and it must be reviewed and manually removed before
+retry if it is safe to do so. Never delete a generation while a retained backup
+archive or running instance may reference it.
+
+## Restic-encrypted offsite copies for local mode
 
 This protects an entire recovery generation (RocksDB, media, signing identity,
 OIDC account mappings and settings) without putting live database or media I/O
@@ -104,57 +131,6 @@ is still a risk; keep an independent recovery copy as well.
    previously uploaded media, and the ability to federate. Record the tested
    archive timestamp, architecture and restore duration. Never perform the
    first recovery drill against the only production copy.
-
-## Future experiment: Storj as *live* media storage
-
-Upstream supports mounting an S3-backed filesystem at `$database_path/media`,
-but does not implement a native transactional object-store media backend.
-**RocksDB must remain on a local durable filesystem.**
-
-A candidate for a disposable development VM is:
-
-```text
-Continuwuity /home/yunohost.app/continuwuity/
-  RocksDB and signing keys ............. local durable filesystem
-  media/ ................................ rclone FUSE: crypt over Storj S3
-/var/cache/continuwuity-rclone/ ......... local persistent, monitored VFS cache
-/etc/continuwuity-rclone/ ............... root-owned credentials + crypt keys
-```
-
-Rclone's native Storj backend keeps encryption keys local, but sends roughly
-2.68 times the plaintext upload size across the network due to local erasure
-coding. Storj's S3 gateway avoids this amplification. `rclone crypt` over the
-gateway can provide separate client-controlled encryption for content and
-filenames; names, sizes and timestamps still need metadata/privacy review.
-
-**This is an engineering experiment, not an installation recipe.** A future
-storage mode must ship as a coordinated package change with all these gates:
-
-- Persist `media_storage=local|remote` and expected mount identity; verify it
-  before startup and every backup, restore, upgrade, configuration change,
-  service restart and purge. An absent mount must fail closed, never expose the
-  empty underlying mountpoint to the application.
-- Own and order the mount and daemon in systemd; prevent FUSE-unmount races and
-  ensure `ProtectHome`, `ReadWritePaths` and mount namespaces work together.
-- Make VFS write-back durability explicit. Closing a locally cached file does
-  **not** mean it has reached Storj. Survive mount kill, power loss, network
-  interruption, dirty-cache replay, full disk, and S3 gateway errors.
-- Check file modification/birth-time behavior and media pruning. Storj's S3
-  gateway has a documented multipart metadata limitation; rclone may need VFS
-  `writes`/`full` and a suitable S3 upload cutoff. Benchmark large files,
-  thumbnails and federated downloads.
-- Define a consistent recovery generation linking a local RocksDB snapshot and
-  a verified remote media checkpoint/version; never back up just the database
-  and claim media is in that archive. Preserve object versions during rollback.
-- Avoid recursively changing ownership or copying entire remote media on every
-  config change or upgrade. Never delete the remote bucket during uninstall or
-  purge without a separately explicit administrator decision.
-- Test on an isolated YunoHost VM: offline boot, mid-write disconnection,
-  force-killed rclone, disk exhaustion, backup with mount missing, cross-host
-  restore using escrowed keys, and remote object loss.
-
-Until those tests pass, keep media local and use **encrypted offsite backups**
-to Storj or another independently controlled provider.
 
 ### References
 
