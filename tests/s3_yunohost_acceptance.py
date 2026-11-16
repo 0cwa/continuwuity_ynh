@@ -100,7 +100,9 @@ def rewrite_candidate_manifest(manifest: str, architecture: str, binary_name: st
 
 def setup_s3_fixture(binary: Path, weed: Path) -> subprocess.Popen[bytes]:
     FIXTURE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    artifact_root = FIXTURE_DIR / "artifacts"
+    # nginx runs as an unprivileged user, so keep its static document root
+    # outside the mode-0700 fixture directory containing TLS keys and data.
+    artifact_root = ARTIFACT_DIR / "http"
     artifact_root.mkdir(mode=0o755, exist_ok=True)
     served_binary = artifact_root / binary.name
     shutil.copyfile(binary, served_binary)
