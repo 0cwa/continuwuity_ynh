@@ -55,16 +55,35 @@ def _redact(value: str) -> str:
     return value
 
 
-def command(label: str, argv: list[str], *, expected_success: bool = True) -> subprocess.CompletedProcess[str]:
+def command(
+    label: str,
+    argv: list[str],
+    *,
+    expected_success: bool | None = True,
+    timeout_seconds: int = 60,
+) -> subprocess.CompletedProcess[str]:
     """Run a guest command without echoing credential-bearing arguments."""
     print(f"== {label}", flush=True)
-    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                output = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
+                print(_redact(output.rstrip()), flush=True)
+        raise RuntimeError(f"{label} exceeded its {timeout_seconds}-second timeout") from error
     output = "\n".join(part for part in (result.stdout, result.stderr) if part)
     if output:
         print(_redact(output.rstrip()), flush=True)
-    if expected_success and result.returncode != 0:
+    if expected_success is True and result.returncode != 0:
         raise RuntimeError(f"{label} failed with exit status {result.returncode}")
-    if not expected_success and result.returncode == 0:
+    if expected_success is False and result.returncode == 0:
         raise RuntimeError(f"{label} unexpectedly succeeded")
     return result
 
@@ -244,16 +263,21 @@ def ensure_yunohost() -> None:
                 "--username", ADMIN, "--fullname", "Acceptance User",
                 "--password", ADMIN_PASSWORD, "--i-have-read-terms-of-services",
             ],
+            timeout_seconds=15 * 60,
         )
         return
 
-    domain = subprocess.run(
-        ["yunohost", "domain", "info", DOMAIN], capture_output=True, text=True, check=False
+    domain = command(
+        "Check whether the package test domain exists",
+        ["yunohost", "domain", "info", DOMAIN],
+        expected_success=None,
     )
     if domain.returncode != 0:
         command("Add the package test domain", ["yunohost", "domain", "add", DOMAIN])
-    user = subprocess.run(
-        ["yunohost", "user", "info", ADMIN], capture_output=True, text=True, check=False
+    user = command(
+        "Check whether the package test user exists",
+        ["yunohost", "user", "info", ADMIN],
+        expected_success=None,
     )
     if user.returncode != 0:
         help_result = command(
@@ -384,11 +408,9 @@ def probe_s3_from_service_context() -> None:
 
 
 def report_service_proxy_variable_names() -> None:
-    result = subprocess.run(
+    result = command(
+        "Read the Continuwuity service PID for environment inspection",
         ["systemctl", "show", "--property=MainPID", "--value", f"{APP}.service"],
-        capture_output=True,
-        text=True,
-        check=False,
     )
     try:
         pid = int(result.stdout.strip()) if result.returncode == 0 else 0
@@ -451,20 +473,35 @@ def rclone_environment() -> dict[str, str]:
 
 
 def rclone_text(*arguments: str) -> str:
-    result = subprocess.run(
-        ["rclone", *arguments],
-        env=rclone_environment(),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    action = arguments[0]
+    try:
+        result = subprocess.run(
+            ["rclone", *arguments],
+            env=rclone_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as error:
+        for partial in (error.stdout, error.stderr):
+            if partial:
+                output = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
+                print(_redact(output.rstrip()), flush=True)
+        raise RuntimeError(f"rclone {action} exceeded its 60-second timeout") from error
     if result.returncode != 0:
-        raise RuntimeError(f"rclone {arguments[0]} failed with exit status {result.returncode}.")
+        if result.stderr:
+            print(_redact(result.stderr.rstrip()), flush=True)
+        raise RuntimeError(f"rclone {action} failed with exit status {result.returncode}.")
     return result.stdout
 
 
 def backup_archive(existing: set[Path], label: str) -> tuple[Path, str]:
-    command(f"Create the {label} YunoHost archive", ["yunohost", "backup", "create", "--apps", APP])
+    command(
+        f"Create the {label} YunoHost archive",
+        ["yunohost", "backup", "create", "--apps", APP],
+        timeout_seconds=10 * 60,
+    )
     archive_dir = Path("/home/yunohost.backup/archives")
     created = sorted(
         (path for path in archive_dir.iterdir() if path.is_file() and path not in existing and (path.name.endswith(".tar") or path.name.endswith(".tar.gz"))),
@@ -623,11 +660,16 @@ def install_package() -> None:
             "yunohost", "app", "install", str(PACKAGE_DIR), "--force",
             "--args", urllib.parse.urlencode(args),
         ],
+        timeout_seconds=15 * 60,
     )
 
 
 def remove_package(label: str) -> None:
-    command(f"Remove the app for {label}", ["yunohost", "app", "remove", APP, "--force"])
+    command(
+        f"Remove the app for {label}",
+        ["yunohost", "app", "remove", APP, "--force"],
+        timeout_seconds=10 * 60,
+    )
 
 
 def restore_archive(name: str, *, expected_success: bool) -> subprocess.CompletedProcess[str]:
@@ -635,6 +677,7 @@ def restore_archive(name: str, *, expected_success: bool) -> subprocess.Complete
         f"Restore {name}",
         ["yunohost", "backup", "restore", name, "--apps", APP],
         expected_success=expected_success,
+        timeout_seconds=10 * 60,
     )
 
 
@@ -705,7 +748,12 @@ def main() -> None:
                 raise RuntimeError(f"The forced restore failure did not reach the expected rollback checkpoint: {checkpoint}.")
         if data_dir.is_symlink() or not (data_dir / "CURRENT").is_file() or (data_dir / "CURRENT").is_symlink() or (data_dir / "CURRENT").stat().st_size == 0:
             raise RuntimeError("The failed restore did not leave a safe, readable retained RocksDB directory.")
-        if subprocess.run(["systemctl", "is-active", "--quiet", f"{APP}.service"], check=False).returncode == 0:
+        service_state = command(
+            "Check Continuwuity service state after the forced restore failure",
+            ["systemctl", "is-active", "--quiet", f"{APP}.service"],
+            expected_success=None,
+        )
+        if service_state.returncode == 0:
             raise RuntimeError("The failed restore left the service active against the retained data directory.")
         restored_digest = tree_digest(data_dir)
         if restored_digest != retained_digest:
