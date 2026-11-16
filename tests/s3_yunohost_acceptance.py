@@ -8,6 +8,7 @@ the same Incus guest. No production S3 account or external service is used.
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 import copy
 import hashlib
 import io
@@ -15,6 +16,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import signal
 import shutil
 import ssl
 import subprocess
@@ -55,32 +57,180 @@ def _redact(value: str) -> str:
     return value
 
 
+def _redact_diagnostic(value: str) -> str:
+    value = _redact(value)
+    value = re.sub(r"(?i)https?://[^\s\"'<>]+", "[redacted URL]", value)
+    value = re.sub(
+        r"(?i)\b(?:acceptance|live|snapshot|restore):[^\s\"'<>]+",
+        "[redacted S3 location]",
+        value,
+    )
+    for path_prefix in (LIVE_BUCKET, SNAPSHOT_BUCKET, LIVE_PREFIX, "continuwuity-generations"):
+        value = re.sub(
+            re.escape(path_prefix) + r"/[^\s\"'<>]*",
+            "[redacted S3 location]",
+            value,
+            flags=re.IGNORECASE,
+        )
+    for endpoint in (S3_ENDPOINT, f"127.0.0.1:{S3_PORT}", f"127.0.0.1:{S3_TLS_PORT}"):
+        value = value.replace(endpoint, "[redacted endpoint]")
+    for identifier in (LIVE_BUCKET, SNAPSHOT_BUCKET, LIVE_PREFIX):
+        value = value.replace(identifier, "[redacted S3 identifier]")
+    return value
+
+
+def _process_tree(root_pid: int) -> None:
+    """Print process names and kernel wait channels, never command arguments."""
+    processes: dict[int, tuple[int, str, str, str]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            pid = int(entry.name)
+            stat = (entry / "stat").read_text(encoding="utf-8")
+            fields = stat.rsplit(")", 1)[1].split()
+            state, parent_pid = fields[0], int(fields[1])
+            comm = (entry / "comm").read_text(encoding="utf-8").strip()
+            wait_channel = (entry / "wchan").read_text(encoding="utf-8").strip()
+        except (OSError, IndexError, ValueError):
+            continue
+        processes[pid] = (parent_pid, state, comm, wait_channel)
+
+    children: dict[int, list[int]] = defaultdict(list)
+    for pid, (parent_pid, _, _, _) in processes.items():
+        children[parent_pid].append(pid)
+    print("Process tree (PID, state, name, wchan; arguments omitted):", flush=True)
+    if root_pid not in processes:
+        print(f"  timed command process {root_pid} exited before inspection", flush=True)
+        return
+
+    remaining = 64
+
+    def visit(pid: int, depth: int) -> None:
+        nonlocal remaining
+        if remaining <= 0:
+            return
+        remaining -= 1
+        parent_pid, state, comm, wait_channel = processes[pid]
+        indent = "  " * depth
+        print(
+            f"{indent}pid={pid} ppid={parent_pid} state={state} "
+            f"name={comm} wchan={wait_channel or 'unknown'}",
+            flush=True,
+        )
+        for child_pid in sorted(children.get(pid, ())):
+            visit(child_pid, depth + 1)
+
+    visit(root_pid, 0)
+
+
+def _print_log_lines(label: str, lines: list[str]) -> None:
+    print(f"{label} (sanitized tail):", flush=True)
+    if not lines:
+        print("  no log lines available", flush=True)
+        return
+    for line in lines:
+        print(_redact_diagnostic(line.rstrip())[:1200], flush=True)
+
+
+def _recent_operation_log_tails() -> None:
+    root = Path("/var/log/yunohost/categories/operation")
+    try:
+        logs = sorted(
+            root.rglob("*.log"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )[:2]
+    except OSError:
+        logs = []
+    for index, path in enumerate(logs, start=1):
+        try:
+            with path.open(encoding="utf-8", errors="replace") as source:
+                lines = list(deque(source, maxlen=80))
+        except OSError:
+            lines = []
+        _print_log_lines(f"Recent YunoHost operation log {index}", lines)
+    if not logs:
+        print("No recent YunoHost operation log files found.", flush=True)
+
+
+def _journal_tail(label: str, argv: list[str]) -> None:
+    try:
+        result = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _print_log_lines(label, [])
+        return
+    lines = (result.stdout + result.stderr).splitlines()[-80:]
+    _print_log_lines(label, lines)
+
+
+def _timeout_diagnostics(label: str, pid: int) -> None:
+    print(f"== Timeout diagnostics for {label}; command arguments omitted", flush=True)
+    _process_tree(pid)
+    _recent_operation_log_tails()
+    _journal_tail(
+        "Continuwuity service journal",
+        ["journalctl", "-u", f"{APP}.service", "--no-pager", "-n", "80", "-o", "short-iso"],
+    )
+    _journal_tail(
+        "Recent system journal",
+        ["journalctl", "--since", "20 minutes ago", "--no-pager", "-n", "100", "-o", "short-iso"],
+    )
+
+
 def command(
     label: str,
     argv: list[str],
     *,
     expected_success: bool | None = True,
     timeout_seconds: int = 60,
+    env: dict[str, str] | None = None,
+    log_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run a guest command without echoing credential-bearing arguments."""
     print(f"== {label}", flush=True)
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as error:
-        for partial in (error.stdout, error.stderr):
-            if partial:
-                output = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
-                print(_redact(output.rstrip()), flush=True)
-        raise RuntimeError(f"{label} exceeded its {timeout_seconds}-second timeout") from error
-    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
-    if output:
-        print(_redact(output.rstrip()), flush=True)
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _timeout_diagnostics(label, process.pid)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = process.communicate(timeout=5)
+        output = "\n".join(part for part in (stdout, stderr) if part)
+        if output:
+            print(_redact_diagnostic(output.rstrip()), flush=True)
+        raise RuntimeError(f"{label} exceeded its {timeout_seconds}-second timeout") from None
+    result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    output = "\n".join(part for part in (stdout, stderr) if part)
+    if log_output and output:
+        print(_redact_diagnostic(output.rstrip()), flush=True)
+    elif not log_output and result.returncode != 0 and stderr:
+        print(_redact_diagnostic(stderr.rstrip()), flush=True)
     if expected_success is True and result.returncode != 0:
         raise RuntimeError(f"{label} failed with exit status {result.returncode}")
     if expected_success is False and result.returncode == 0:
@@ -474,25 +624,12 @@ def rclone_environment() -> dict[str, str]:
 
 def rclone_text(*arguments: str) -> str:
     action = arguments[0]
-    try:
-        result = subprocess.run(
-            ["rclone", *arguments],
-            env=rclone_environment(),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired as error:
-        for partial in (error.stdout, error.stderr):
-            if partial:
-                output = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
-                print(_redact(output.rstrip()), flush=True)
-        raise RuntimeError(f"rclone {action} exceeded its 60-second timeout") from error
-    if result.returncode != 0:
-        if result.stderr:
-            print(_redact(result.stderr.rstrip()), flush=True)
-        raise RuntimeError(f"rclone {action} failed with exit status {result.returncode}.")
+    result = command(
+        f"Read remote snapshot marker with rclone {action}",
+        ["rclone", *arguments],
+        env=rclone_environment(),
+        log_output=False,
+    )
     return result.stdout
 
 
