@@ -52,6 +52,7 @@ ynh_script_progression() { set -x; }
 ynh_die() { printf '%s\n' "$*" >&2; exit 1; }
 ynh_app_setting_set() { :; }
 ynh_app_setting_set_default() { :; }
+ynh_app_setting_get() { :; }
 ynh_string_random() { printf '%s\n' "$TEST_TOKEN"; }
 ynh_setup_source() { set -x; }
 ynh_exec_as_app() { :; }
@@ -91,6 +92,7 @@ builtin source "$PACKAGE/scripts/install"
 set -e
 ynh_app_setting_set_default() { :; }
 ynh_app_setting_set() { :; }
+ynh_app_setting_get() { :; }
 ynh_string_random() { printf '%s\n' "$TEST_TOKEN"; }
 builtin source "$PACKAGE/scripts/_common.sh"
 set -x
@@ -104,6 +106,125 @@ continuwuity_defaults
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn(token, result.stdout + result.stderr)
+
+    def test_s3_password_settings_are_initialized_without_clobbering_existing_values(self):
+        harness = r'''
+set -euo pipefail
+declare -A settings=()
+
+ynh_app_setting_get() {
+    local key="${1#--key=}"
+    if [[ ${settings[$key]+present} ]]; then
+        printf '%s\n' "${settings[$key]}"
+    fi
+    return 0
+}
+
+ynh_app_setting_set() {
+    local key='' value='' arg
+    for arg in "$@"; do
+        case "$arg" in
+            --key=*) key="${arg#--key=}" ;;
+            --value=*) value="${arg#--value=}" ;;
+        esac
+    done
+    settings["$key"]="$value"
+}
+
+ynh_app_setting_set_default() {
+    local key='' value='' arg
+    for arg in "$@"; do
+        case "$arg" in
+            --key=*) key="${arg#--key=}" ;;
+            --value=*) value="${arg#--value=}" ;;
+        esac
+    done
+    if [[ -z "${!key:-}" ]]; then
+        ynh_app_setting_set "--key=$key" "--value=$value"
+        printf -v "$key" '%s' "$value"
+    fi
+}
+
+ynh_string_random() { printf 'test-registration-token\n'; }
+if [[ ${INITIAL_ACCESS_PRESENT:-0} == 1 ]]; then
+    settings[media_s3_access_key_id]="$INITIAL_ACCESS_VALUE"
+fi
+if [[ ${INITIAL_SECRET_PRESENT:-0} == 1 ]]; then
+    settings[media_s3_secret_access_key]="$INITIAL_SECRET_VALUE"
+fi
+
+builtin source "$PACKAGE/scripts/_settings.sh"
+continuwuity_defaults
+
+[[ ${settings[media_s3_access_key_id]+present} ]]
+[[ ${settings[media_s3_secret_access_key]+present} ]]
+[[ "${settings[media_s3_access_key_id]}" == "$EXPECTED_ACCESS_VALUE" ]]
+[[ "${settings[media_s3_secret_access_key]}" == "$EXPECTED_SECRET_VALUE" ]]
+'''
+
+        def run_case(*, action="upgrade", access=None, secret=None, initial=None, expected):
+            initial = initial or {}
+            env = {
+                **os.environ,
+                "PACKAGE": str(PACKAGE),
+                "app": "continuwuity",
+                "domain": "matrix.example.test",
+                "YNH_APP_ACTION": action,
+                "EXPECTED_ACCESS_VALUE": expected["media_s3_access_key_id"],
+                "EXPECTED_SECRET_VALUE": expected["media_s3_secret_access_key"],
+            }
+            for name, value in (
+                ("media_s3_access_key_id", access),
+                ("media_s3_secret_access_key", secret),
+            ):
+                if value is None:
+                    env.pop(name, None)
+                else:
+                    env[name] = value
+            for name, value in initial.items():
+                suffix = "ACCESS" if name == "media_s3_access_key_id" else "SECRET"
+                env[f"INITIAL_{suffix}_PRESENT"] = "1"
+                env[f"INITIAL_{suffix}_VALUE"] = value
+            result = subprocess.run(
+                ["bash", "-c", harness], capture_output=True, text=True, env=env
+            )
+            self.assertEqual(result.returncode, 0, "Credential settings were not initialized safely.")
+
+        # Fresh installs need both configured static values, or empty values
+        # when local media/provider credentials are in use.
+        run_case(
+            action="install",
+            access="test-access-key",
+            secret="test-secret-key",
+            expected={
+                "media_s3_access_key_id": "test-access-key",
+                "media_s3_secret_access_key": "test-secret-key",
+            },
+        )
+        run_case(
+            action="install",
+            access="",
+            secret="",
+            expected={"media_s3_access_key_id": "", "media_s3_secret_access_key": ""},
+        )
+
+        # Upgrades initialize truly missing keys, but preserve stored values
+        # when environment variables are absent (including an empty setting).
+        run_case(expected={"media_s3_access_key_id": "", "media_s3_secret_access_key": ""})
+        run_case(
+            initial={
+                "media_s3_access_key_id": "existing-access-key",
+                "media_s3_secret_access_key": "existing-secret-key",
+            },
+            expected={
+                "media_s3_access_key_id": "existing-access-key",
+                "media_s3_secret_access_key": "existing-secret-key",
+            },
+        )
+        run_case(
+            initial={"media_s3_access_key_id": ""},
+            expected={"media_s3_access_key_id": "", "media_s3_secret_access_key": ""},
+        )
 
     def test_routine_permissions_never_traverse_media(self):
         common = (PACKAGE / "scripts/_service.sh").read_text()

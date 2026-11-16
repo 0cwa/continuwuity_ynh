@@ -3,6 +3,34 @@
 # Settings validation, configuration rendering and credential files.
 # Loaded by _common.sh; YunoHost supplies settings and helpers at call time.
 
+continuwuity_initialize_s3_credentials() {
+    # Password install inputs are excluded from YunoHost's automatic settings
+    # write. Initialize absent keys explicitly, but never replace stored values
+    # with empty environment variables during an upgrade.
+    set +x
+    local credential_key stored_value result
+    for credential_key in media_s3_access_key_id media_s3_secret_access_key; do
+        # The sentinel distinguishes a present empty value from an absent key.
+        stored_value="$(
+            if ynh_app_setting_get --key="$credential_key"; then
+                printf '.0'
+            else
+                result=$?
+                printf '.%s' "$result"
+            fi
+        )"
+        set +x
+        case "$stored_value" in
+            .0)
+                ynh_app_setting_set --key="$credential_key" --value="${!credential_key:-}"
+                set +x
+                ;;
+            *.0) ;;
+            *) ynh_die "Cannot inspect stored S3 credential settings; refusing to overwrite them." ;;
+        esac
+    done
+}
+
 continuwuity_defaults() {
     # Some YunoHost helpers re-enable xtrace; keep secret settings out of logs.
     set +x
@@ -33,8 +61,7 @@ continuwuity_defaults() {
     else
         ynh_app_setting_set_default --key=media_s3_key_prefix --value="$media_s3_key_prefix"
     fi
-    ynh_app_setting_set_default --key=media_s3_access_key_id --value="${media_s3_access_key_id:-}"
-    ynh_app_setting_set_default --key=media_s3_secret_access_key --value="${media_s3_secret_access_key:-}"
+    continuwuity_initialize_s3_credentials
     if [[ -z "${registration_token:-}" ]]; then
         registration_token="$(ynh_string_random --length=48)"
         ynh_app_setting_set --key=registration_token --value="$registration_token"
