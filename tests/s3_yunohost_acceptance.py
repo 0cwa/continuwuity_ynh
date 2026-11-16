@@ -42,6 +42,8 @@ S3_ENDPOINT = "https://127.0.0.1:18443"
 S3_PORT = 18333
 S3_TLS_PORT = 18443
 ARTIFACT_TLS_PORT = 18444
+S3_ACCESS_LOG = "/var/log/nginx/continuwuity-s3-acceptance-access.log"
+S3_ERROR_LOG = "/var/log/nginx/continuwuity-s3-acceptance-error.log"
 MANIFEST_NAME = "continuwuity-s3-media.json"
 COMMIT_MARKER = ".continuwuity-snapshot-commit.json"
 
@@ -59,7 +61,7 @@ def _redact(value: str) -> str:
 
 def _redact_diagnostic(value: str) -> str:
     value = _redact(value)
-    value = re.sub(r"(?i)https?://[^\s\"'<>]+", "[redacted URL]", value)
+    value = re.sub(r"(?i)(?:https?|s3)://[^\s\"'<>]+", "[redacted URL]", value)
     value = re.sub(
         r"(?i)\b(?:acceptance|live|snapshot|restore):[^\s\"'<>]+",
         "[redacted S3 location]",
@@ -137,7 +139,7 @@ def _recent_operation_log_tails() -> None:
     root = Path("/var/log/yunohost/categories/operation")
     try:
         logs = sorted(
-            root.rglob("*.log"),
+            (path for path in root.rglob("*") if path.is_file()),
             key=lambda path: path.stat().st_mtime_ns,
             reverse=True,
         )[:2]
@@ -151,7 +153,7 @@ def _recent_operation_log_tails() -> None:
             lines = []
         _print_log_lines(f"Recent YunoHost operation log {index}", lines)
     if not logs:
-        print("No recent YunoHost operation log files found.", flush=True)
+        print("No recent YunoHost operation log files found under the operation log directory.", flush=True)
 
 
 def _journal_tail(label: str, argv: list[str]) -> None:
@@ -327,11 +329,14 @@ def setup_s3_fixture(binary: Path, weed: Path) -> subprocess.Popen[bytes]:
     nginx_conf = Path("/etc/nginx/conf.d/continuwuity-s3-acceptance.conf")
     nginx_conf.write_text(
         f"""
+log_format continuwuity_s3_acceptance '$time_iso8601 method=$request_method status=$status upstream_status=$upstream_status request_time=$request_time upstream_response_time=$upstream_response_time';
 server {{
     listen 127.0.0.1:{S3_TLS_PORT} ssl;
     server_name 127.0.0.1;
     ssl_certificate {cert};
     ssl_certificate_key {key};
+    access_log {S3_ACCESS_LOG} continuwuity_s3_acceptance;
+    error_log {S3_ERROR_LOG} warn;
     client_max_body_size 16m;
     location / {{
         proxy_pass http://127.0.0.1:{S3_PORT};
@@ -366,7 +371,7 @@ server {{
         [
             str(weed_target), "server", "-ip=127.0.0.1", "-ip.bind=127.0.0.1",
             f"-dir={data_dir}", "-master.port=19333", "-master.volumeSizeLimitMB=64",
-            "-volume.port=18080", "-volume.max=2", "-volume.preStopSeconds=0",
+            "-volume.port=18080", "-volume.max=32", "-volume.preStopSeconds=0",
             "-filer", "-filer.port=18888", "-s3", f"-s3.port={S3_PORT}",
             "-master.telemetry=false",
         ],

@@ -144,13 +144,21 @@ jobs:
       - name: Show the local object server log on failure
         if: failure()
         run: |
-          sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /opt/continuwuity-s3-acceptance/seaweed.log" || true
+          redact_fixture() {
+            sed -E \
+              -e 's#(https?|s3)://[^[:space:]"<>]+#[redacted URL]#g' \
+              -e 's#(acceptance-live|acceptance-snapshots|continuwuity/media|continuwuity-generations)(/[^[:space:]"<>]*)?#[redacted S3 location]#g' \
+              -e 's/(acceptance-key|acceptance-secret|Test-Admin-Password-8742|Matrix-Test-Password-8347)/[redacted]/g'
+          }
+          sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /opt/continuwuity-s3-acceptance/seaweed.log" \
+            | redact_fixture || true
+          sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /var/log/nginx/continuwuity-s3-acceptance-access.log" \
+            | redact_fixture || true
+          sg incus-admin -c "incus exec '$INSTANCE' -- tail -n 160 /var/log/nginx/continuwuity-s3-acceptance-error.log" \
+            | redact_fixture || true
           sg incus-admin -c "incus exec '$INSTANCE' -- journalctl -u continuwuity.service --no-pager -n 160" \
             | grep -Ei 's3|media|error|warn' \
-            | sed -e 's/Test-Admin-Password-8742/[redacted]/g' \
-                  -e 's/Matrix-Test-Password-8347/[redacted]/g' \
-                  -e 's/acceptance-key/[redacted]/g' \
-                  -e 's/acceptance-secret/[redacted]/g' || true
+            | redact_fixture || true
 
       - name: Remove the disposable Incus guest
         if: always()
