@@ -13,15 +13,8 @@ on:
       - 'tests/s3_yunohost_acceptance.py'
       - 'tests/test_s3_acceptance_manifest.py'
   workflow_dispatch:
-    inputs:
-      artifact_run_id:
-        description: Temporary candidate run ID; source artifacts expire after 14 days. Use a retained run; switch to a public release asset after validation.
-        required: true
-        default: '43906710298'
-        type: string
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
@@ -42,64 +35,88 @@ jobs:
     timeout-minutes: 90
     env:
       INSTANCE: continuwuity-s3-acceptance
-      # Temporary while the candidate release is private. The build workflow retains artifacts for 14 days.
-      CANDIDATE_RUN_ID: ${{ github.event.inputs.artifact_run_id || '43906710298' }}
       EXPECTED_SOURCE_COMMIT: 1c0abdccc4e47d63bd828f59da8a2f82396c265c
+      CANDIDATE_RELEASE_TAG: s3-candidate-2026-11-16
+      CANDIDATE_SOURCE_REPOSITORY: 0cwa/continuwuity
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           path: app
 
-      - name: Check the temporary candidate artifact is still retained
+      - name: Validate the candidate source pin in the package manifest
+        id: candidate
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          EXPECTED_ARTIFACT: continuwuity-s3-${{ matrix.arch }}
+          CANDIDATE_ARCH: ${{ matrix.arch }}
         run: |
           set -eu
-          metadata="$RUNNER_TEMP/candidate-artifacts.json"
-          status="$(curl --silent --show-error --output "$metadata" --write-out '%{http_code}' \
+          python3 - "$GITHUB_WORKSPACE/app/manifest.toml" "$CANDIDATE_ARCH" "$GITHUB_OUTPUT" <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+          import tomllib
+
+          manifest_path, arch, output_path = sys.argv[1:]
+          release_tag = os.environ["CANDIDATE_RELEASE_TAG"]
+          repository = os.environ["CANDIDATE_SOURCE_REPOSITORY"]
+          filename = f"conduwuit-linux-static-{arch}"
+          expected_url = (
+              f"https://github.com/{repository}/releases/download/{release_tag}/{filename}"
+          )
+          with Path(manifest_path).open("rb") as manifest_file:
+              source = tomllib.load(manifest_file)["resources"]["sources"]["main"][arch]
+          if source.get("url") != expected_url:
+              raise SystemExit(
+                  f"::error::The {arch} package source must pin the published candidate release asset."
+              )
+          digest = source.get("sha256", "")
+          if not re.fullmatch(r"[0-9a-f]{64}", digest):
+              raise SystemExit(f"::error::The {arch} package source has no valid SHA256 pin.")
+          with Path(output_path).open("a", encoding="utf-8") as output:
+              output.write(f"asset_name={filename}\n")
+              output.write(f"asset_url={expected_url}\n")
+              output.write(f"asset_sha256={digest}\n")
+          PY
+
+      - name: Download and verify the pinned candidate release assets
+        env:
+          ASSET_NAME: ${{ steps.candidate.outputs.asset_name }}
+          ASSET_URL: ${{ steps.candidate.outputs.asset_url }}
+          ASSET_SHA256: ${{ steps.candidate.outputs.asset_sha256 }}
+        run: |
+          set -eu
+          mkdir -p candidate
+          curl --fail --location --silent --show-error --retry 3 "$ASSET_URL" \
+            --output "candidate/$ASSET_NAME"
+          curl --fail --location --silent --show-error --retry 3 "$ASSET_URL.sha256" \
+            --output "candidate/$ASSET_NAME.sha256"
+          curl --fail --location --silent --show-error --retry 3 \
+            "https://github.com/$CANDIDATE_SOURCE_REPOSITORY/releases/download/$CANDIDATE_RELEASE_TAG/source-commit.txt" \
+            --output candidate/source-commit.txt
+          curl --fail --location --silent --show-error --retry 3 \
             --header 'Accept: application/vnd.github+json' \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$REPOSITORY/actions/runs/$CANDIDATE_RUN_ID/artifacts?per_page=100")"
-          if [ "$status" != 200 ]; then
-            echo "::error::Candidate run $CANDIDATE_RUN_ID is unavailable (HTTP $status). This temporary artifact expires after 14 days; dispatch with a different retained run ID. After the candidate release is validated and public, use its release asset instead."
-            exit 1
-          fi
-          python3 - "$metadata" "$EXPECTED_ARTIFACT" "$CANDIDATE_RUN_ID" <<'PY'
+            "https://api.github.com/repos/$CANDIDATE_SOURCE_REPOSITORY/commits/$CANDIDATE_RELEASE_TAG" \
+            --output "$RUNNER_TEMP/candidate-source-ref.json"
+          python3 - "$RUNNER_TEMP/candidate-source-ref.json" candidate/source-commit.txt \
+            "candidate/$ASSET_NAME.sha256" "$EXPECTED_SOURCE_COMMIT" "$ASSET_SHA256" "$ASSET_NAME" <<'PY'
           import json
+          import re
           import sys
           from pathlib import Path
 
-          metadata = json.loads(Path(sys.argv[1]).read_text())
-          artifact_name, run_id = sys.argv[2:]
-          retained = any(
-              artifact.get("name") == artifact_name and not artifact.get("expired")
-              for artifact in metadata.get("artifacts", [])
-          )
-          if not retained:
-              raise SystemExit(
-                  f"::error::Candidate artifact {artifact_name} is missing or expired in run {run_id}. "
-                  "This temporary artifact expires after 14 days; dispatch with a different retained run ID. "
-                  "After the candidate release is validated and public, use its release asset instead."
-              )
+          ref_path, provenance_path, checksum_path, expected_commit, expected_sha, filename = sys.argv[1:]
+          source_ref = json.loads(Path(ref_path).read_text(encoding="utf-8"))
+          release_commit = Path(provenance_path).read_text(encoding="utf-8").strip()
+          if source_ref.get("sha") != expected_commit or release_commit != expected_commit:
+              raise SystemExit("::error::Candidate release source provenance does not match the pinned source commit.")
+          checksum = Path(checksum_path).read_text(encoding="utf-8").split()
+          if len(checksum) != 2 or checksum[0] != expected_sha or checksum[1] != filename:
+              raise SystemExit("::error::Candidate release checksum sidecar does not match the package manifest pin.")
+          if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+              raise SystemExit("::error::Package manifest SHA256 pin is malformed.")
           PY
-
-      - name: Download the selected candidate binary artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: continuwuity-s3-${{ matrix.arch }}
-          run-id: ${{ env.CANDIDATE_RUN_ID }}
-          github-token: ${{ github.token }}
-          path: candidate
-
-      - name: Verify candidate provenance and checksum
-        working-directory: candidate
-        run: |
-          set -eu
-          test "$(cat source-commit.txt)" = "$EXPECTED_SOURCE_COMMIT"
-          sha256sum --check "conduwuit-linux-static-${{ matrix.arch }}.sha256"
+          (cd candidate && sha256sum --check "$ASSET_NAME.sha256")
 
       - name: Download pinned SeaweedFS test server
         env:
