@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import tomllib
 import unittest
+from unittest.mock import patch
 
 import s3_yunohost_acceptance as acceptance
 
@@ -35,6 +36,19 @@ class AcceptanceManifestTests(unittest.TestCase):
             rewritten,
         )
         self.assertIn(f'    amd64.sha256 = "{digest}"', rewritten)
+
+    def test_app_removal_uses_supported_yunohost_cli_arguments(self):
+        with patch.object(acceptance, "command") as command:
+            acceptance.remove_package("successful restore")
+
+        self.assertEqual(
+            command.call_args.args,
+            (
+                "Remove the app for successful restore",
+                ["yunohost", "app", "remove", acceptance.APP],
+            ),
+        )
+        self.assertEqual(command.call_args.kwargs, {"timeout_seconds": 10 * 60})
 
 
 if __name__ == "__main__":

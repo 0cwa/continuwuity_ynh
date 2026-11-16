@@ -809,7 +809,7 @@ def install_package() -> None:
 def remove_package(label: str) -> None:
     command(
         f"Remove the app for {label}",
-        ["yunohost", "app", "remove", APP, "--force"],
+        ["yunohost", "app", "remove", APP],
         timeout_seconds=10 * 60,
     )
 
