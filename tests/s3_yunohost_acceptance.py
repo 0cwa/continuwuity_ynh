@@ -223,12 +223,23 @@ def ensure_yunohost() -> None:
         ["yunohost", "user", "info", ADMIN], capture_output=True, text=True, check=False
     )
     if user.returncode != 0:
+        help_result = command(
+            "Read the installed YunoHost user creation help",
+            ["yunohost", "user", "create", "--help"],
+        )
+        help_text = help_result.stdout + help_result.stderr
+        required_options = ("--fullname", "--domain", "--password")
+        if any(option not in help_text for option in required_options):
+            raise RuntimeError(
+                "The installed YunoHost user creation CLI does not expose the required "
+                "--fullname, --domain, and --password options."
+            )
         command(
             "Create the package test user",
             [
                 "yunohost", "user", "create", ADMIN,
-                "-f", "Acceptance", "-l", "User", "-m", f"{ADMIN}@{DOMAIN}",
-                "-p", ADMIN_PASSWORD,
+                "--fullname", "Acceptance User", "--domain", DOMAIN,
+                "--password", ADMIN_PASSWORD,
             ],
         )
 

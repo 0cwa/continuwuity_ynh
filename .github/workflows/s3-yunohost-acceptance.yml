@@ -42,9 +42,9 @@ jobs:
           - arch: amd64
             runner: ubuntu-24.04
             seaweed_sha256: 8b538c22d47d0c3fb6792adaa6b0c735a967401270a53427d5a476dcaca9b7ae
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            seaweed_sha256: b70a09540bf8aa2b9ea2a48b3b16abe27e162e90a0c3bf041f8d414caf52de8a
+        # The published bookworm-stable/appci Incus image is amd64-only. The
+        # arm64 candidate has separate binary/S3 smoke coverage, not this full
+        # YunoHost guest lifecycle.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
