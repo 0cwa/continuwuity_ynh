@@ -50,6 +50,33 @@ jobs:
           (cd artifacts && sha256sum "conduwuit-linux-static-$ARCH" > "conduwuit-linux-static-$ARCH.sha256")
           git rev-parse HEAD > artifacts/source-commit.txt
 
+      - name: Check out package smoke tests
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: package
+          persist-credentials: false
+
+      - name: Exercise the binary with package configuration
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          python3 -m venv "$RUNNER_TEMP/s3-smoke-venv"
+          "$RUNNER_TEMP/s3-smoke-venv/bin/pip" install -r package/tests/requirements.txt
+          export PYTHONPATH="$GITHUB_WORKSPACE/package/tests"
+          export BINARY_PATH="$GITHUB_WORKSPACE/artifacts/conduwuit-linux-static-$ARCH"
+          "$RUNNER_TEMP/s3-smoke-venv/bin/python" - <<'PY'
+          import os
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from smoke_upstream import SmtpFixture, run_smoke
+
+          with TemporaryDirectory(prefix="continuwuity-s3-smoke-") as directory:
+              with SmtpFixture() as smtp_port:
+                  run_smoke(Path(os.environ["BINARY_PATH"]), Path(directory), smtp_port)
+          PY
+
       - name: Upload experimental binary and provenance
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
