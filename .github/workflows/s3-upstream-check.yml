@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: 0cwa/continuwuity
-          ref: cf41966cf73006f43f945b3cd9ac769e5ad978f8
+          ref: 1c0abdccc4e47d63bd828f59da8a2f82396c265c
           fetch-depth: 0
           persist-credentials: false
       - name: Check for textual conflicts with current upstream
