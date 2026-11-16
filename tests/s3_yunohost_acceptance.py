@@ -352,6 +352,49 @@ def probe_s3_from_service_context() -> None:
     print("PASS: app systemd context can reach the loopback S3 endpoint with verified TLS", flush=True)
 
 
+def report_service_proxy_variable_names() -> None:
+    result = subprocess.run(
+        ["systemctl", "show", "--property=MainPID", "--value", f"{APP}.service"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        pid = int(result.stdout.strip()) if result.returncode == 0 else 0
+        entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0") if pid > 0 else []
+    except (OSError, ValueError):
+        entries = []
+    names = sorted(
+        key.decode("utf-8", errors="replace")
+        for entry in entries
+        if entry and b"=" in entry
+        for key, _ in (entry.split(b"=", 1),)
+        if b"proxy" in key.lower()
+    )
+    print(
+        "Continuwuity.service proxy environment variable names "
+        f"(values omitted): {', '.join(names) if names else 'none'}",
+        flush=True,
+    )
+
+
+def report_s3_config() -> None:
+    config = tomllib.loads(Path("/var/www/continuwuity/config.toml").read_text(encoding="utf-8"))
+    global_config = config.get("global", {})
+    media_s3 = global_config.get("media_s3", {})
+    print(
+        "Candidate config S3 fields: "
+        f"backend={global_config.get('media_backend')!r}, "
+        f"endpoint={media_s3.get('endpoint')!r}, "
+        f"allow_http={media_s3.get('allow_http')!r}, "
+        f"access_key_present={bool(media_s3.get('access_key_id'))}, "
+        f"secret_key_present={bool(media_s3.get('secret_access_key'))}",
+        flush=True,
+    )
+    if global_config.get("media_backend") != "s3" or media_s3.get("endpoint") != S3_ENDPOINT:
+        raise RuntimeError("The installed binary is not configured for the expected S3 endpoint.")
+
+
 def settings() -> dict:
     import yaml
 
@@ -576,14 +619,13 @@ def main() -> None:
     try:
         ensure_yunohost()
         install_package()
+        report_s3_config()
+        report_service_proxy_variable_names()
         probe_s3_from_service_context()
         port = app_port()
 
         initial_payload = b"native YunoHost S3 backup acceptance media\n"
         token, initial_uri = login_and_upload(port, "initial-archive-media", initial_payload)
-        config = tomllib.loads(Path("/var/www/continuwuity/config.toml").read_text(encoding="utf-8"))["global"]
-        if config.get("media_backend") != "s3" or config.get("media_s3", {}).get("endpoint") != S3_ENDPOINT:
-            raise RuntimeError("The installed native binary is not configured for the trusted S3 endpoint.")
         if not (Path("/home/yunohost.app/continuwuity/CURRENT").is_file()):
             raise RuntimeError("The live YunoHost app did not create its RocksDB database.")
         media_dir = Path("/home/yunohost.app/continuwuity/media")
