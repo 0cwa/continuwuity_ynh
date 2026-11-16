@@ -1,0 +1,33 @@
+name: Check S3 changes against upstream
+
+on:
+  push:
+    branches: [agent/s3-build-pipeline]
+    paths: [.github/workflows/s3-upstream-check.yml]
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the pinned S3 branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: 0cwa/continuwuity
+          ref: cf41966cf73006f43f945b3cd9ac769e5ad978f8
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check for textual conflicts with current upstream
+        run: |
+          set -eu
+          git fetch --no-tags https://forgejo.ellis.link/continuwuation/continuwuity.git refs/heads/main
+          upstream=$(git rev-parse FETCH_HEAD)
+          printf 'Upstream main: %s\nS3 branch: %s\n' "$upstream" "$(git rev-parse HEAD)"
+          git merge-tree --write-tree "$upstream" HEAD
+          echo 'Textual merge succeeded; building and testing is still required.'
