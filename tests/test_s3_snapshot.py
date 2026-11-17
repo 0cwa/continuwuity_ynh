@@ -528,6 +528,19 @@ class S3SnapshotTests(unittest.TestCase):
                     s3_snapshot._stream_rclone_lines(env, ["hashsum", "SHA256", "remote:bucket"],
                                                     output="stdout", on_line=lambda _line: None)
 
+    def test_streamed_output_rejects_oversized_and_invalid_lines(self):
+        self.popen_patch.stop()
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "rclone"
+            env = {"PATH": temporary, "RCLONE_CONFIG": "/dev/null"}
+            for payload, error in ((b"x" * (s3_snapshot.MAX_RCLONE_LINE_BYTES + 1), "size limit"),
+                                   (b"\xff\n", "invalid text")):
+                executable.write_text(f"#!{sys.executable}\nimport sys\nsys.stdout.buffer.write({payload!r})\n")
+                executable.chmod(0o700)
+                with self.subTest(error=error), self.assertRaisesRegex(s3_snapshot.SnapshotError, error):
+                    s3_snapshot._stream_rclone_lines(env, ["hashsum", "SHA256", "remote:bucket"],
+                                                    output="stdout", on_line=lambda _line: None)
+
     def test_marker_reader_timeout_is_bounded(self):
         self.popen_patch.stop()
         with tempfile.TemporaryDirectory() as temporary:
