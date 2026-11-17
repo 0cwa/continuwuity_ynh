@@ -123,34 +123,31 @@ continuwuity_validate_media_tree() {
     fi
 }
 
-continuwuity_require_local_media() {
-    local mounts target
+_continuwuity_require_unmounted_data() {
+    local description="$1" message="$2" mounts target
     mounts="$(findmnt --kernel --raw --noheadings --output TARGET)" \
-        || ynh_die "Cannot inspect media mounts; refusing an unsafe backup/restore."
+        || ynh_die "Cannot inspect $description mounts; refusing an unsafe backup/restore."
     while IFS= read -r target; do
         case "$target" in
             "$data_dir"|"$data_dir/"*)
                 # Reject mounts at the root or anywhere inside the data tree.
-                ynh_die "Mounted media or data directories are not supported for YunoHost backup/restore. Migrate to local storage or use encrypted offsite backups."
+                ynh_die "$message"
                 ;;
         esac
     done <<< "$mounts"
+}
+
+continuwuity_require_local_media() {
+    _continuwuity_require_unmounted_data media \
+        "Mounted media or data directories are not supported for YunoHost backup/restore. Migrate to local storage or use encrypted offsite backups."
     # Check mounts first so a remote media tree is rejected without traversing
     # its contents.
     continuwuity_validate_media_tree "$data_dir/media" live
 }
 
 continuwuity_require_local_data_mounts() {
-    local mounts target
-    mounts="$(findmnt --kernel --raw --noheadings --output TARGET)" \
-        || ynh_die "Cannot inspect data mounts; refusing an unsafe backup/restore."
-    while IFS= read -r target; do
-        case "$target" in
-            "$data_dir"|"$data_dir/"*)
-                ynh_die "Mounted data directories are not supported for YunoHost backup/restore. Use a local data directory."
-                ;;
-        esac
-    done <<< "$mounts"
+    _continuwuity_require_unmounted_data data \
+        "Mounted data directories are not supported for YunoHost backup/restore. Use a local data directory."
 }
 
 continuwuity_check_snapshot_space() {

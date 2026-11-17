@@ -128,6 +128,27 @@ restore_service_start_attempted=0
 restore_succeeded=0
 restore_settings_update_attempted=0
 
+# Restore one saved configuration file, or remove it if it was absent before
+# the attempted restore. Never remove an unexpected directory or special file.
+continuwuity_restore_config_file() {
+    local name="$1" was_present="$2" path="$install_dir/$1"
+    local backup="$restore_rollback_dir/original-$1" failed=0
+    if [[ "$was_present" -eq 1 ]]; then
+        [[ -f "$backup" && ! -L "$backup" ]] || return 1
+    fi
+    if [[ -e "$path" || -L "$path" ]]; then
+        if [[ -f "$path" || -L "$path" ]]; then
+            rm -f -- "$path" || failed=1
+        else
+            failed=1
+        fi
+    fi
+    if [[ "$was_present" -eq 1 && ! -e "$path" && ! -L "$path" ]]; then
+        cp -p -- "$backup" "$path" || failed=1
+    fi
+    return "$failed"
+}
+
 continuwuity_restore_cleanup() {
     local status=$? rollback_failed=0 rollback_safe=1
     trap - EXIT INT TERM
@@ -161,48 +182,8 @@ continuwuity_restore_cleanup() {
         fi
         if [[ "$rollback_safe" -eq 1 && "$restore_config_state_recorded" -eq 1 ]]; then
             if [[ -d "$install_dir" && ! -L "$install_dir" ]]; then
-                for restore_config_name in config.toml overrides.toml; do
-                    restore_config_path="$install_dir/$restore_config_name"
-                    restore_config_was_present=0
-                    restore_config_backup=""
-                    case "$restore_config_name" in
-                        config.toml)
-                            restore_config_was_present="$restore_had_existing_config"
-                            restore_config_backup="$restore_rollback_dir/original-config.toml"
-                            ;;
-                        overrides.toml)
-                            restore_config_was_present="$restore_had_existing_overrides"
-                            restore_config_backup="$restore_rollback_dir/original-overrides.toml"
-                            ;;
-                    esac
-
-                    if [[ "$restore_config_was_present" -eq 1 ]]; then
-                        if [[ -f "$restore_config_backup" && ! -L "$restore_config_backup" ]]; then
-                            if [[ -e "$restore_config_path" || -L "$restore_config_path" ]]; then
-                                if [[ -f "$restore_config_path" || -L "$restore_config_path" ]]; then
-                                    rm -f -- "$restore_config_path" || rollback_failed=1
-                                else
-                                    rollback_failed=1
-                                fi
-                            fi
-                            if [[ ! -e "$restore_config_path" && ! -L "$restore_config_path" ]]; then
-                                cp -p -- "$restore_config_backup" "$restore_config_path" \
-                                    || rollback_failed=1
-                            fi
-                        else
-                            rollback_failed=1
-                        fi
-                    elif [[ -e "$restore_config_path" || -L "$restore_config_path" ]]; then
-                        # The file was absent before restore. Remove only a
-                        # regular file or the symlink itself; never recurse
-                        # through an unexpected directory or special file.
-                        if [[ -f "$restore_config_path" || -L "$restore_config_path" ]]; then
-                            rm -f -- "$restore_config_path" || rollback_failed=1
-                        else
-                            rollback_failed=1
-                        fi
-                    fi
-                done
+                continuwuity_restore_config_file config.toml "$restore_had_existing_config" || rollback_failed=1
+                continuwuity_restore_config_file overrides.toml "$restore_had_existing_overrides" || rollback_failed=1
             else
                 rollback_failed=1
             fi
