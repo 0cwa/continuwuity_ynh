@@ -1,12 +1,18 @@
 # Media storage and offsite backup
 
-Local POSIX storage is the default. Native S3 media mode uses the upstream
-`26.11.0-alpha.2` prerelease and remains an experimental alpha, not a
-production-ready option. The local S3 YunoHost acceptance test passed on amd64,
+Local POSIX storage is the default and uses the official upstream
+`26.11.0-alpha.2` prerelease. S3 mode uses an experimental fork by package
+maintainer [0cwa](https://github.com/0cwa/continuwuity), not upstream. Both
+are alpha software and are not production-ready. The local S3 YunoHost acceptance test passed on amd64,
 and the ARM binary passed an S3 smoke test; no real-provider test has been run.
 Do not manually mount object storage or FUSE under the data directory. The
 package's local mode rejects mounted data and symlinked media rather than
 risking an incomplete backup.
+
+A backup restores the binary saved in its archive. Local-media backups made
+with package version `26.11.0-alpha.2~ynh1` contain the 0cwa fork; restoring
+them first restores that fork. Upgrade the restored app to a newer package
+version to select the official upstream binary for local media.
 
 ## Experimental native S3 media mode
 

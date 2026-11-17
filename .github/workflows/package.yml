@@ -60,4 +60,4 @@ jobs:
           .venv/bin/pip install -r tests/requirements.txt
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Verify and exercise the manifest's release binary
-        run: python tests/smoke_upstream.py --download
+        run: python tests/smoke_upstream.py --download --test-fork-transition

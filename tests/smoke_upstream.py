@@ -21,7 +21,7 @@ from package_helpers import PACKAGE, render_config
 from upstream_helpers import Homeserver, SmtpFixture, check, select_binary
 
 
-def run_smoke(binary, temporary, smtp_port, expected_media_backend="local"):
+def run_smoke(binary, temporary, smtp_port, expected_media_backend="local", restore_binary=None):
     install = temporary / "install"
     install.mkdir()
     data = temporary / "data"
@@ -110,6 +110,8 @@ def run_smoke(binary, temporary, smtp_port, expected_media_backend="local"):
     shutil.copytree(data, restored)
     settings.update(data_dir=str(restored), allow_registration="true")
     config.write_text(render_config(**settings))
+    if restore_binary is not None:
+        server.binary = restore_binary
     try:
         server.start()
         status, result = server.request("GET", "/_matrix/client/v3/account/whoami", token=token)
@@ -144,18 +146,24 @@ def main():
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--binary", type=Path, help="Previously downloaded binary (SHA256 checked).")
     source.add_argument("--download", action="store_true", help="Download the pinned architecture-specific release from the manifest.")
+    parser.add_argument("--test-fork-transition", action="store_true", help="Create local data with the S3 fork, then restore it with official upstream.")
     parser.add_argument("--keep-directory", type=Path, help="Use and retain this new directory, including private test logs.")
     arguments = parser.parse_args()
+    if arguments.test_fork_transition and not arguments.download:
+        parser.error("--test-fork-transition requires --download")
+    def exercise(directory):
+        official = select_binary(arguments, directory)
+        fork = select_binary(arguments, directory, "s3") if arguments.test_fork_transition else official
+        with SmtpFixture() as smtp_port:
+            run_smoke(fork, directory, smtp_port, restore_binary=official)
     if arguments.keep_directory:
         arguments.keep_directory.mkdir(mode=0o700, parents=True, exist_ok=False)
         directory = arguments.keep_directory.resolve()
-        with SmtpFixture() as smtp_port:
-            run_smoke(select_binary(arguments, directory), directory, smtp_port)
+        exercise(directory)
     else:
         with tempfile.TemporaryDirectory(prefix="continuwuity-smoke-") as temporary:
             directory = Path(temporary)
-            with SmtpFixture() as smtp_port:
-                run_smoke(select_binary(arguments, directory), directory, smtp_port)
+            exercise(directory)
 
 
 if __name__ == "__main__":

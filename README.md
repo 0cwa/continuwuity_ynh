@@ -1,20 +1,19 @@
 # Continuwuity for YunoHost
 
 A YunoHost packaging-v2 application for [Continuwuity](https://continuwuity.org/),
-the community-maintained Matrix homeserver. This repository packages upstream
-binaries; the homeserver source lives on
-[Forgejo](https://forgejo.ellis.link/continuwuation/continuwuity).
+the community-maintained Matrix homeserver. The upstream homeserver source lives
+on [Forgejo](https://forgejo.ellis.link/continuwuation/continuwuity).
 
 Requires **YunoHost 12.1.18 or newer** on **amd64 or arm64**. The current
 default package's release, architecture-specific downloads and SHA256 checksums
 are pinned in [manifest.toml](manifest.toml).
 
-This independent package is under agent-driven development. Native S3 media
-storage uses the upstream `26.11.0-alpha.2` prerelease and is an experimental
-alpha, not a production-ready option. Its local S3 YunoHost acceptance test
-passed on amd64, and the ARM binary passed an S3 smoke test; no real-provider
-test has been run. Local media remains the recommended default. See
-[testing](doc/TESTING.md) and the [storage guide](doc/STORAGE.md).
+Local media uses the official upstream `26.11.0-alpha.2` prerelease. S3 media
+uses an experimental [fork by package maintainer 0cwa](https://github.com/0cwa/continuwuity),
+not upstream. Both are alpha software and are not production-ready. S3 passed a
+local YunoHost acceptance test on amd64 and a binary smoke test on arm64; no
+hosted S3 provider has been tested. Local media remains the recommended default.
+See [testing](doc/TESTING.md) and the [storage guide](doc/STORAGE.md).
 
 ## Support status
 

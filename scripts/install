@@ -22,8 +22,8 @@ continuwuity_validate_settings
 # administrator with an old database: move it aside and start clean.
 continuwuity_retire_retained_data
 
-ynh_script_progression "Installing the verified upstream binary..."
-ynh_setup_source --dest_dir="$install_dir"
+ynh_script_progression "Installing the verified binary for the selected media backend..."
+continuwuity_setup_binary
 continuwuity_write_config
 continuwuity_permissions
 

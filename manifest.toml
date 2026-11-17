@@ -4,7 +4,7 @@ packaging_format = 2
 id = "continuwuity"
 name = "Continuwuity"
 description.en = "Community maintained Matrix homeserver with optional YunoHost login through Dex"
-version = "26.11.0-alpha.2~ynh1"
+version = "26.11.0-alpha.2~ynh2"
 maintainers = ["0cwa"]
 
 [upstream]
@@ -58,10 +58,10 @@ ram.runtime = "512M"
 
     [install.media_backend]
     ask.en = "Media storage backend"
-    help.en = "Choose once during installation. Existing media is not migrated if storage changes; the package blocks later backend changes. S3 mode uses an experimental upstream alpha and requires a separate remote snapshot bucket. It is not production-ready."
+    help.en = "Choose once during installation. Existing media is not migrated if storage changes; the package blocks later backend changes. Local storage uses the official upstream alpha. S3 uses an experimental fork maintained by this package developer (0cwa), not upstream, and requires a separate snapshot bucket. Neither alpha is production-ready."
     type = "select"
     choices.local = "Local filesystem (recommended default)"
-    choices.s3 = "S3-compatible object storage"
+    choices.s3 = "S3-compatible object storage (experimental 0cwa fork)"
     default = "local"
 
     [install.media_s3_endpoint]
@@ -121,8 +121,18 @@ ram.runtime = "512M"
 
 [resources]
     [resources.sources.main]
-    # This experimental S3 branch pins the public upstream prerelease candidate.
-    # Both SHA256 values match the release's SHA256SUMS and asset metadata.
+    # Official upstream release; local media uses this binary.
+    prefetch = false
+    amd64.url = "https://forgejo.ellis.link/continuwuation/continuwuity/releases/download/v26.11.0-alpha.2/conduwuit-linux-static-amd64"
+    amd64.sha256 = "478bc4fe23db0bca5729e8777555f9127a820cf3d484454e79ffe60805b01a7f"
+    arm64.url = "https://forgejo.ellis.link/continuwuation/continuwuity/releases/download/v26.11.0-alpha.2/conduwuit-linux-static-arm64"
+    arm64.sha256 = "20889aa933055e0f24fdc13f9f728ac2d386de9bd517437780353b8e0ae12539"
+    extract = false
+    rename = "continuwuity"
+
+    [resources.sources.s3]
+    # Package maintainer's fork; only selected for the experimental S3 mode.
+    prefetch = false
     amd64.url = "https://github.com/0cwa/continuwuity/releases/download/s3-candidate-2026-11-16/conduwuit-linux-static-amd64"
     amd64.sha256 = "facf50a7ef577b120f3eb05c54fe631ef57c75a22fb6349a40c60e56b35b63e2"
     arm64.url = "https://github.com/0cwa/continuwuity/releases/download/s3-candidate-2026-11-16/conduwuit-linux-static-arm64"

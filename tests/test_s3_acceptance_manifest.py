@@ -25,12 +25,13 @@ class AcceptanceManifestTests(unittest.TestCase):
             digest,
         )
         manifest = tomllib.loads(rewritten)
-        amd64 = manifest["resources"]["sources"]["main"]["amd64"]
+        amd64 = manifest["resources"]["sources"]["s3"]["amd64"]
         self.assertEqual(
             amd64["url"],
             "https://127.0.0.1:18444/conduwuit-linux-static-amd64",
         )
         self.assertEqual(amd64["sha256"], digest)
+        self.assertEqual(manifest["resources"]["sources"]["main"], tomllib.loads(original)["resources"]["sources"]["main"])
         self.assertIn(
             '    amd64.url = "https://127.0.0.1:18444/conduwuit-linux-static-amd64"',
             rewritten,
