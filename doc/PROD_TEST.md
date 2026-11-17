@@ -48,8 +48,8 @@ YunoHost CLI's `yunohost app install --help` if its prompts differ.
 After installation:
 
 1. Check `nginx -t` and the Continuwuity service in YunoHost. Confirm the
-   installation-domain client API responds and the identity-domain Matrix
-   discovery URLs point to the intended installation domain.
+   installation-domain client API responds, client and server discovery point
+   to that domain, and support discovery advertises the intended administrator.
 2. Use an actual Matrix client to sign in, create a test room, and upload and
    read media. For Dex, test a fresh OAuth login with a supported client.
 3. Verify federation with an independent Matrix server and exercise any SMTP
