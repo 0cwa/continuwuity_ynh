@@ -321,7 +321,7 @@ rclone/FUSE manually, because a missing mount could expose an empty underlying
 directory. The experimental S3 alpha lifecycle and limitations are described
 in the [storage guide](STORAGE.md); it is not production-ready.
 For encrypted offsite copies of local-mode backups, see the
-[Restic guide](STORAGE.md).
+[storage and offsite backup guide](STORAGE.md).
 
 ## Upgrade, remove and migrate
 

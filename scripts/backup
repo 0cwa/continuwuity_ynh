@@ -10,6 +10,9 @@ source ../settings/scripts/_backup.sh
 set +x
 
 ynh_print_info "Creating a consistent backup of Continuwuity..."
+if [[ "${BACKUP_CORE_ONLY:-0}" == 1 || "${do_not_backup_data:-0}" == 1 ]]; then
+    ynh_print_warn "Continuwuity includes its database and matching media despite the requested data exclusion. This is necessary for a coordinated rollback; allow space for a complete backup."
+fi
 if continuwuity_s3_media_enabled; then
     ynh_print_info "The database is archived locally and media is copied to a matching immutable S3 generation. The service remains stopped until both snapshots are verified."
 else

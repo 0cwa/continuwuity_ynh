@@ -162,4 +162,9 @@ ram.runtime = "512M"
     # The backend listens on loopback. Only YunoHost's HTTPS port is public.
 
     [resources.apt]
-    packages = ["ca-certificates", "curl", "python3", "python3-yaml", "rclone"]
+    packages = ["ca-certificates", "curl", "python3", "python3-yaml"]
+    packages_from_raw_bash = """
+    if [[ "${media_backend:-local}" == "s3" ]]; then
+        echo rclone
+    fi
+    """
