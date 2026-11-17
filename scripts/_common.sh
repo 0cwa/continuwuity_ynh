@@ -55,3 +55,12 @@ continuwuity_configure() {
     ynh_config_add_systemd
     ynh_config_add_nginx
 }
+
+# Fetch only the source selected by the installation's persistent media backend.
+continuwuity_setup_binary() {
+    case "${media_backend:-local}" in
+        local) ynh_setup_source --dest_dir="$install_dir" --source_id=main ;;
+        s3) ynh_setup_source --dest_dir="$install_dir" --source_id=s3 ;;
+        *) ynh_die "Unsupported media backend; refusing to select a binary." ;;
+    esac
+}

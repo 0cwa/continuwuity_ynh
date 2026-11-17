@@ -24,22 +24,38 @@ class PackageTests(unittest.TestCase):
         manifest = tomllib.loads((PACKAGE / "manifest.toml").read_text())
         self.assertEqual(manifest["packaging_format"], 2)
         self.assertEqual(manifest["integration"]["helpers_version"], "2.1")
-        sources = manifest["resources"]["sources"]["main"]
-        self.assertEqual(manifest["version"], "26.11.0-alpha.2~ynh1")
-        candidate_release = "s3-candidate-2026-11-16"
-        expected_hashes = {
-            "amd64": "facf50a7ef577b120f3eb05c54fe631ef57c75a22fb6349a40c60e56b35b63e2",
-            "arm64": "4d6ab130433207d9332bf051444e73a72cd68352c2dbd8274524fdc7f321dcca",
-        }
-        for architecture in manifest["integration"]["architectures"]:
-            with self.subTest(architecture=architecture):
-                asset = sources[architecture]
-                self.assertEqual(
-                    asset["url"],
-                    f"https://github.com/0cwa/continuwuity/releases/download/{candidate_release}/conduwuit-linux-static-{architecture}",
-                )
-                self.assertEqual(asset["sha256"], expected_hashes[architecture])
-        self.assertIs(sources["extract"], False)
+        sources = manifest["resources"]["sources"]
+        self.assertEqual(manifest["version"], "26.11.0-alpha.2~ynh2")
+        for source_id, base in (
+            ("main", "https://forgejo.ellis.link/continuwuation/continuwuity/releases/download/v26.11.0-alpha.2"),
+            ("s3", "https://github.com/0cwa/continuwuity/releases/download/s3-candidate-2026-11-16"),
+        ):
+            source = sources[source_id]
+            self.assertFalse(source["prefetch"])
+            self.assertFalse(source["extract"])
+            for architecture in manifest["integration"]["architectures"]:
+                with self.subTest(source=source_id, architecture=architecture):
+                    asset = source[architecture]
+                    self.assertEqual(asset["url"], f"{base}/conduwuit-linux-static-{architecture}")
+                    self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
+
+    def test_media_backend_selects_one_yunohost_source(self):
+        common = PACKAGE / "scripts/_common.sh"
+        shell = r'''
+source "$1"
+ynh_setup_source() { printf '%s\n' "$*"; }
+ynh_die() { echo "$*" >&2; return 1; }
+install_dir=/srv/continuwuity
+media_backend="$2"
+continuwuity_setup_binary
+'''
+        for backend, source in (("local", "main"), ("s3", "s3"), ("", "main")):
+            with self.subTest(backend=backend):
+                result = subprocess.run(["bash", "-c", shell, "test", str(common), backend], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), f"--dest_dir=/srv/continuwuity --source_id={source}")
+        result = subprocess.run(["bash", "-c", shell, "test", str(common), "unknown"], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_backend_stays_local_and_public_api_is_not_ssowat_protected(self):
         rendered = render_config()

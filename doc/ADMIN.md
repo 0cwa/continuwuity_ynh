@@ -257,8 +257,9 @@ database and media file.
 
 ### Experimental S3 alpha
 
-Local media remains the default. S3 mode uses the upstream `26.11.0-alpha.2`
-prerelease and is experimental, not production-ready. The local S3 YunoHost
+Local media remains the default and uses the official upstream
+`26.11.0-alpha.2` prerelease. S3 mode uses an experimental fork by package
+maintainer 0cwa, not upstream; neither alpha is production-ready. The local S3 YunoHost
 acceptance test passed on amd64, and the ARM binary passed an S3 smoke test; no
 real-provider test has been run. The mode is chosen at installation; changing
 between local and S3 later requires a separately completed media migration. S3

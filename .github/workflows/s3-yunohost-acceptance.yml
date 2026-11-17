@@ -65,7 +65,7 @@ jobs:
               f"https://github.com/{repository}/releases/download/{release_tag}/{filename}"
           )
           with Path(manifest_path).open("rb") as manifest_file:
-              source = tomllib.load(manifest_file)["resources"]["sources"]["main"][arch]
+              source = tomllib.load(manifest_file)["resources"]["sources"]["s3"][arch]
           if source.get("url") != expected_url:
               raise SystemExit(
                   f"::error::The {arch} package source must pin the published candidate release asset."

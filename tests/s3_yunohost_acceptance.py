@@ -249,7 +249,7 @@ def prepare_package(binary: Path) -> None:
         manifest_path.read_text(encoding="utf-8"), ARCH, binary.name, digest
     )
     manifest_path.write_text(manifest, encoding="utf-8")
-    candidate = tomllib.loads(manifest)["resources"]["sources"]["main"][ARCH]
+    candidate = tomllib.loads(manifest)["resources"]["sources"]["s3"][ARCH]
     if candidate["url"] != f"https://127.0.0.1:{ARTIFACT_TLS_PORT}/{binary.name}" or candidate["sha256"] != digest:
         raise RuntimeError("The temporary package manifest does not pin the supplied candidate binary.")
 
@@ -257,16 +257,19 @@ def prepare_package(binary: Path) -> None:
 def rewrite_candidate_manifest(manifest: str, architecture: str, binary_name: str, digest: str) -> str:
     """Point the temporary package manifest at the supplied guest-local binary."""
     url = f"https://127.0.0.1:{ARTIFACT_TLS_PORT}/{binary_name}"
+    before, marker, source = manifest.partition("    [resources.sources.s3]\n")
+    if not marker:
+        raise RuntimeError("The package has no S3 source.")
     for key, value in ((f"{architecture}.url", url), (f"{architecture}.sha256", digest)):
         pattern = re.compile(rf"^(?P<indent>[ \t]*){re.escape(key)}\s*=\s*.*$", re.MULTILINE)
-        manifest, count = pattern.subn(
+        source, count = pattern.subn(
             lambda match: f'{match.group("indent")}{key} = "{value}"',
-            manifest,
+            source,
             count=1,
         )
         if count != 1:
             raise RuntimeError(f"Could not set the candidate source field {key}.")
-    return manifest
+    return before + marker + source
 
 
 def setup_s3_fixture(binary: Path, weed: Path) -> subprocess.Popen[bytes]:

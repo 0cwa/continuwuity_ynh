@@ -122,13 +122,13 @@ def check(condition, explanation):
         raise AssertionError(explanation)
 
 
-def select_binary(arguments, temporary):
+def select_binary(arguments, temporary, source_id="main"):
     architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
     if architecture is None:
         raise RuntimeError("The upstream smoke test supports amd64 and arm64 hosts.")
     manifest = tomllib.loads((PACKAGE / "manifest.toml").read_text())
-    source = manifest["resources"]["sources"]["main"][architecture]
-    binary = arguments.binary.resolve() if arguments.binary else temporary / "continuwuity"
+    source = manifest["resources"]["sources"][source_id][architecture]
+    binary = arguments.binary.resolve() if arguments.binary else temporary / f"continuwuity-{source_id}"
     if arguments.download:
         with urllib.request.urlopen(source["url"], timeout=60) as response, binary.open("wb") as destination:
             shutil.copyfileobj(response, destination)
