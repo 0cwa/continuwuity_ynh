@@ -642,6 +642,8 @@ def rclone_text(*arguments: str) -> str:
 
 
 def backup_archive(existing: set[Path], label: str) -> tuple[Path, str]:
+    started = time.monotonic()
+    disk_before = shutil.disk_usage("/home/yunohost.backup").free
     command(
         f"Create the {label} YunoHost archive",
         ["yunohost", "backup", "create", "--apps", APP],
@@ -657,6 +659,12 @@ def backup_archive(existing: set[Path], label: str) -> tuple[Path, str]:
     archive = created[0]
     name = archive.name.removesuffix(".tar.gz").removesuffix(".tar")
     print(f"Archive created: {archive.name}", flush=True)
+    disk_after = shutil.disk_usage("/home/yunohost.backup").free
+    print(
+        f"Backup measurement ({label}): {time.monotonic() - started:.1f}s total, "
+        f"archive {archive.stat().st_size} bytes, net free-space change {disk_before - disk_after} bytes "
+        "(not peak use or service downtime)", flush=True,
+    )
     return archive, name
 
 
@@ -826,6 +834,40 @@ def restore_archive(name: str, *, expected_success: bool) -> subprocess.Complete
     )
 
 
+def check_failed_upgrade_rollback(port: int, token: str, uri: str, payload: bytes) -> int:
+    """Inject an upgrade failure in the disposable guest and exercise YunoHost rollback."""
+    failing_package = FIXTURE_DIR / "forced-upgrade-package"
+    shutil.copytree(PACKAGE_DIR, failing_package)
+    upgrade = failing_package / "scripts" / "upgrade"
+    upgrade.write_text(
+        '#!/bin/bash\nset -eu\n'
+        'systemctl stop "$app.service"\n'
+        'printf "upgrade changed the database directory\\n" > "$data_dir/upgrade-failure-marker"\n'
+        'echo "Injected upgrade failure after changing data" >&2\n'
+        'exit 71\n', encoding="utf-8",
+    )
+    upgrade.chmod(0o755)
+    start = time.monotonic()
+    result = command(
+        "Inject a failing upgrade and allow YunoHost safety rollback",
+        ["yunohost", "app", "upgrade", APP, "--file", str(failing_package), "--force"],
+        expected_success=False, timeout_seconds=15 * 60,
+    )
+    if "Injected upgrade failure after changing data" not in result.stdout + result.stderr:
+        raise RuntimeError("The forced upgrade did not reach the injected data change.")
+    marker = Path("/home/yunohost.app/continuwuity/upgrade-failure-marker")
+    if marker.exists():
+        raise RuntimeError("YunoHost did not roll back the data written by the failed upgrade.")
+    command("Check the rolled-back Continuwuity service", ["systemctl", "is-active", "--quiet", f"{APP}.service"])
+    port = app_port()
+    status, _, whoami = http_request(port, "GET", "/_matrix/client/v3/account/whoami", token=token)
+    if status != 200 or whoami.get("user_id") != f"@{ADMIN}:{DOMAIN}":
+        raise RuntimeError("The failed-upgrade rollback did not restore the Matrix session.")
+    download_media(port, token, uri, payload, "failed-upgrade rollback")
+    print(f"PASS: real failed-upgrade rollback restored data, service and S3 media ({time.monotonic() - start:.1f}s total)", flush=True)
+    return port
+
+
 def main() -> None:
     if ARCH not in ("amd64", "arm64"):
         raise RuntimeError("ACCEPTANCE_ARCH must be amd64 or arm64.")
@@ -866,6 +908,8 @@ def main() -> None:
         status, _, whoami = http_request(port, "GET", "/_matrix/client/v3/account/whoami", token=token)
         if status != 200 or whoami.get("user_id") != f"@{ADMIN}:{DOMAIN}":
             raise RuntimeError("The successful YunoHost restore did not recover the Matrix database session.")
+
+        port = check_failed_upgrade_rollback(port, token, initial_uri, initial_payload)
 
         baseline_payload = b"retained pre-failure Matrix media\n"
         token, _ = login_and_upload(port, "retained-before-failure", baseline_payload)
