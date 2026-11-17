@@ -21,7 +21,7 @@ See [testing](doc/TESTING.md) and the [storage guide](doc/STORAGE.md).
   backup/restore, remove, multi-instance. See [Testing](doc/TESTING.md) for the
   recorded result.
 - **Community-tested (reports welcome):** Dex/OIDC login, SMTP, federation/TURN,
-  arm64 YunoHost, very large media stores, offsite Restic/Storj backup.
+  arm64 YunoHost, very large media stores, offsite backup apps.
 
 ## Install
 
