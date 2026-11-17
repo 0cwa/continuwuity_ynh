@@ -45,14 +45,19 @@ cd package_check
 ./package_check.sh --branch main https://github.com/0cwa/continuwuity_ynh
 ```
 
-For a non-`main` branch, replace `main` with that branch. Record each run in
-this table:
+For a non-`main` branch, replace `main` with that branch. Historical results
+are listed below; a previous pass does not establish that a later commit passed.
 
 | Result line |
 | --- |
 | package_check `<commit>`, YunoHost `<version>`, tests passed, `<date>` |
 | package_check `f7d32ca`, YunoHost 12.1.41.2, 5/5 (linter, install, multi-instance, backup/restore, upgrade), 2026-10-29 |
 | Production host, [PROD_TEST.md](PROD_TEST.md) steps 1–8, YunoHost 12.1.41.2 amd64, `47b2db0`: install, login, no password in logs, upgrade, backup, remove/restore, purge with no leftovers, 2026-10-29 |
+| Shared-server test, YunoHost 12.1.42 amd64, `cd61cf6`, 2026-11-17: local-media/password install with separate identity domain, public discovery and federation version endpoint, administrator login, media upload/download, and app-only backup containing database and test media. |
+
+The 2026-11-17 deployment did not test a restore, remote-server federation,
+or off-server capture of the new app backup. An endpoint response alone does
+not establish that federation with another Matrix server works.
 
 Real-host behavior that package_check does not cover, such as Dex, SMTP, TURN,
 and arm64 YunoHost, is tracked in [PROD_TEST.md](PROD_TEST.md) and is not part
