@@ -87,13 +87,18 @@ jobs:
         run: |
           set -eu
           mkdir -p candidate
-          curl --fail --location --silent --show-error --retry 3 "$ASSET_URL" \
+          cache_key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Downloading candidate binary"
+          curl --fail --location --silent --show-error --retry 3 "${ASSET_URL}?run=${cache_key}" \
             --output "candidate/$ASSET_NAME"
-          curl --fail --location --silent --show-error --retry 3 "$ASSET_URL.sha256" \
+          echo "Downloading candidate checksum"
+          curl --fail --location --silent --show-error --retry 3 "${ASSET_URL}.sha256?run=${cache_key}" \
             --output "candidate/$ASSET_NAME.sha256"
+          echo "Downloading candidate source marker"
           curl --fail --location --silent --show-error --retry 3 \
-            "https://github.com/$CANDIDATE_SOURCE_REPOSITORY/releases/download/$CANDIDATE_RELEASE_TAG/source-commit.txt" \
+            "https://github.com/$CANDIDATE_SOURCE_REPOSITORY/releases/download/$CANDIDATE_RELEASE_TAG/source-commit.txt?run=${cache_key}" \
             --output candidate/source-commit.txt
+          echo "Verifying candidate source tag"
           curl --fail --location --silent --show-error --retry 3 \
             --header 'Accept: application/vnd.github+json' \
             "https://api.github.com/repos/$CANDIDATE_SOURCE_REPOSITORY/commits/$CANDIDATE_RELEASE_TAG" \
