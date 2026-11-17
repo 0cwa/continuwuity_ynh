@@ -1,16 +1,15 @@
 # Testing on a YunoHost server
 
 Continuwuity and the optional S3 fork are alpha software. Test on a disposable
-YunoHost server first; the package's automated tests do not establish readiness
-for your server, S3 provider, or workload. Get permission before changing a
-shared production server and arrange a maintenance window.
+YunoHost server first; automated tests cannot prove readiness for your server,
+S3 provider, or workload. Arrange a maintenance window for a shared server.
 
 ## Before installation
 
 1. Check the YunoHost version, architecture, free disk and memory, service
    health, and available backup space. YunoHost 12.1.18 or newer is required.
    Verify a recent off-server backup and recovery procedure for existing apps.
-2. Choose the permanent Matrix identity deliberately. For example, install on
+2. Choose the permanent Matrix identity. For example, install on
    `matrix.example.org` and enter `example.org` as the identity domain to create
    accounts such as `@alice:example.org`. Both domains must already exist in
    YunoHost, resolve to this server, and have trusted HTTPS certificates. The
@@ -21,13 +20,13 @@ shared production server and arrange a maintenance window.
    of YunoHost accounts. Dex requires an existing working Dex installation and
    OAuth-capable clients; configuring it restarts Dex and can interrupt its
    other clients. Local media is the default and uses the official upstream
-   binary. S3 selects the package maintainer's experimental fork and requires
-   separate live and snapshot buckets. See [storage](STORAGE.md).
+   binary. S3 selects the package maintainer's experimental fork. S3 backups
+   require a static access key pair and separate live and snapshot buckets on
+   the same provider, endpoint, and region. See [storage](STORAGE.md).
 4. Plan for a full database and media copy for backups and upgrade safety
    backups, even if YunoHost requests data exclusion. S3 backups also create a
    separate full remote generation and can keep the service stopped while
-   media is copied and verified. Test storage and recovery costs with realistic
-   data before relying on them.
+   media is copied and verified. Test the costs with representative data.
 
 ## Install and verify
 
@@ -42,8 +41,8 @@ Select the installation domain, permanent identity, existing YunoHost user for
 the initial Matrix administrator, authentication mode, and media backend. The
 initial Matrix password is required in either authentication mode and cannot
 contain whitespace; it can be changed in a Matrix client after installation.
-Do not paste it into a command, chat, or diagnostic report. Check the installed
-YunoHost CLI's `yunohost app install --help` if its prompts differ.
+Do not paste it into a command, chat, or diagnostic report. If prompts differ,
+check `yunohost app install --help`.
 
 After installation:
 
@@ -58,10 +57,9 @@ After installation:
 4. Create a YunoHost app backup and verify recovery on a disposable server with
    the same architecture. For S3, retain and verify the separate generation
    referenced by the archive; copying the archive alone does not copy media.
-   Never overwrite production data merely to test a restore.
+   Do not overwrite production data to test a restore.
 5. Measure backup duration, service interruption, disk use, and, for S3,
-   network traffic and remote storage with representative data. A small test
-   does not establish the costs for a populated homeserver.
+   network traffic and remote storage with representative data.
 
 A normal YunoHost removal retains application data unless explicitly purged.
 Removing the app also removes its managed service and discovery configuration;
